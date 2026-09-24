@@ -1,0 +1,23 @@
+# 构建上下文排除：避免把巨量 node_modules / 数据 / 临时文件送进镜像
+**/node_modules
+**/node_modules/**
+.git
+**/.git
+**/_tmp
+web/_tmp
+**/_tmp/**
+**/*.tsbuildinfo
+**/dist
+web/dist
+server/data
+**/server/data/**
+**/.workbuddy
+**/prototype
+**/node_modules/.cache
+**/*.log
+**/tsc-out.txt
+**/result.txt
+**/verify.mjs
+**/_probe.mjs
+**/_smoke_restore2.mjs
+**/_ls.txt

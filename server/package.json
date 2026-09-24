@@ -1,0 +1,24 @@
+{
+  "name": "codoc-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CoDoc 同写 · 后端 Yjs 协同房间服务 + HTTP 文档接口",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "lib0": "^0.2.99",
+    "ws": "^8.18.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

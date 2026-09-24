@@ -1,0 +1,15 @@
+{
+  "name": "codoc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "同写 CoDoc · 多人实时协同在线办公套件（Excel 先行 MVP）",
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../web && npm install",
+    "dev:server": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev",
+    "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

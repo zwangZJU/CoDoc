@@ -1,0 +1,24 @@
+# CoDoc 同写 · 单容器一键部署
+# 一个服务 = 一个容器（nginx + 后端进程由 supervisord 同管）
+name: codoc
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: codoc:latest
+    container_name: codoc
+    restart: unless-stopped
+    ports:
+      # 宿主机端口 = ${WEB_PORT:-8686}，容器内固定 80；部署脚本 .env 可覆盖
+      - "${WEB_PORT:-8686}:80"
+    environment:
+      - TZ=Asia/Shanghai
+      # 对外访问地址：默认自动推导（nginx 反代会把真实域名传给后端）。
+      # 部署脚本（deploy/deploy-wsl.sh）会自动把当前访问地址写入根目录 .env 的
+      # PUBLIC_BASE；公网部署时手动改 .env 里的 PUBLIC_BASE=https://域名 即可。
+      - PUBLIC_BASE=${PUBLIC_BASE:-}
+    # Yjs 二进制文档持久化（宿主机路径）
+    volumes:
+      - ./server/data:/app/server/data

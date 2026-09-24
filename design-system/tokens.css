@@ -1,0 +1,470 @@
+/* =============================================================================
+   CoDoc（同写）设计令牌 · v1.1
+   v1.1 修订：段落锁竖条改「淡底左外侧」；新增「协同色底 + 白字必须用 -ink」固化类
+            （.collab-chip / .para-lock，见文件末「关键原子类」区）
+   -----------------------------------------------------------------------------
+   视觉方向  : Modern Minimal — Stripe-led Restrained Office
+               主干 Stripe（克制专业办公感 / 中性灰阶 / 1px 细线 / 极少阴影 / 表格密度）
+               融合 Notion（白纸画布 / 温和排版 / 中文行高）
+                    Linear（细部精度 / focus ring / 状态点 / 紧凑控件）
+   主题      : LIGHT FIRST（浅色为主主题，深色仅作 P2 专注模式可选变体）
+   基准分辨率: 1440px，1280px 起响应式
+   -----------------------------------------------------------------------------
+   使用方式  : <link rel="stylesheet" href="tokens.css">，所有组件只消费语义令牌，
+               禁止在组件里硬编码 HEX（协同色除外，需按 slot 1-6 取用）。
+   ============================================================================= */
+
+:root {
+  /* ===========================================================================
+     1. 品牌强调色（Brand / Accent）
+     校验：#2563EB 在 #FFFFFF 上对比度 5.17:1（AA 正文通过）
+           在 #F7F8FA 上 4.87:1（AA 正文通过）
+           白字在 #2563EB 上 5.17:1（AA 通过）
+     =========================================================================== */
+  --brand-50:  #EFF4FE;
+  --brand-100: #DBE7FC;
+  --brand-200: #BFD3F8;
+  --brand-300: #93B4F5;
+  --brand-400: #5B86EE;
+  --brand-500: #2563EB;  /* ★ 主强调色：主按钮 / 链接 / 选中 / 聚焦 */
+  --brand-600: #1D4ED8;  /* hover */
+  --brand-700: #1E40AF;  /* active / pressed / 深链接态 */
+  --brand-800: #1B3A8F;
+  --brand-900: #172F6B;
+
+  --brand-ring:        rgba(37, 99, 235, 0.18); /* focus ring */
+  --brand-ring-strong: rgba(37, 99, 235, 0.28); /* 输入类聚焦 */
+  --brand-tint-6:  #F2F6FE;  /* 6%  选中背景 */
+  --brand-tint-10: #E9EFFD;  /* 10% 信息提示背景 */
+
+  /* ===========================================================================
+     2. 中性色阶（Neutral）
+     =========================================================================== */
+  --neutral-0:   #FFFFFF;
+  --neutral-25:  #FCFCFD;
+  --neutral-50:  #F7F8FA;
+  --neutral-100: #F2F4F7;
+  --neutral-150: #EDEFF3;
+  --neutral-200: #E8EBF0;
+  --neutral-300: #E3E7ED;
+  --neutral-400: #CDD3DC;
+  --neutral-500: #AAB2C0;
+  --neutral-600: #8A93A3;
+  --neutral-700: #6B7280;
+  --neutral-800: #4B5563;
+  --neutral-900: #1F2733;
+  --neutral-950: #111827; /* 最深文本（不使用纯黑 #000） */
+
+  /* -- 语义：背景 ---------------------------------------------------------- */
+  --bg-app:          var(--neutral-50);   /* 应用底：工作台 / 侧边栏 / 抽屉底 */
+  --bg-canvas:       var(--neutral-0);    /* 画布：文档白纸、表格底 */
+  --bg-surface:      var(--neutral-0);    /* 卡片 / 面板 / 模态 */
+  --bg-surface-alt:  var(--neutral-50);   /* 次级表面：表头、工具条、分组底 */
+  --bg-subtle:       var(--neutral-50);
+  --bg-hover:        var(--neutral-100);  /* #F2F4F7 */
+  --bg-active:       var(--neutral-200);  /* #E8EBF0 */
+  --bg-selected:     var(--brand-tint-6); /* #F2F6FE */
+  --bg-disabled:     var(--neutral-100);
+  --bg-scrim:        rgba(17, 24, 39, 0.32);
+  --bg-inverse:      var(--neutral-900);  /* tooltip / 深色提示底 */
+
+  /* -- 语义：文本 ---------------------------------------------------------- */
+  --text-primary:     var(--neutral-950); /* #111827 · 白底 17.7:1 */
+  --text-secondary:   var(--neutral-800); /* #4B5563 · 白底  7.6:1 */
+  --text-tertiary:    var(--neutral-700); /* #6B7280 · 白底  4.8:1 */
+  --text-placeholder: var(--neutral-600); /* #8A93A3 · 白底  3.1:1 仅占位提示 */
+  --text-disabled:    var(--neutral-500); /* #AAB2C0 · 白底  2.1:1 仅禁用态 */
+  --text-on-brand:    var(--neutral-0);
+  --text-on-inverse:  var(--neutral-0);
+  --text-link:        var(--brand-500);
+  --text-link-hover:  var(--brand-700);
+
+  /* -- 语义：边框（1px 细线三级 + 强调） ------------------------------------ */
+  --border-subtle:    var(--neutral-150); /* #EDEFF3 极淡分隔（列表项、菜单分隔） */
+  --border-default:   var(--neutral-300); /* #E3E7ED 常规边框（卡片、输入框、按钮）*/
+  --border-strong:    var(--neutral-400); /* #CDD3DC 强调边框（hover、表格外框、拖放目标）*/
+  --border-emphasis:  var(--neutral-500); /* #AAB2C0 更重（拖拽激活、分隔标题） */
+  --border-brand:     var(--brand-500);   /* 强调蓝边框（聚焦、选中、拖放命中） */
+
+  /* -- 语义：可交互控件轮廓（WCAG 1.4.11 非文本对比 ≥3:1） ------------------ */
+  --border-control:       var(--neutral-500); /* #AAB2C0 · 2.1:1 视觉优先（次按钮/分段控件）*/
+  --border-control-aa:    var(--neutral-600); /* #8A93A3 · 3.1:1 ★ 输入框/复选框默认用这个 */
+  --border-control-hover: var(--neutral-700); /* #6B7280 · hover */
+
+  /* -- 语义：表格网格线（比常规边框更清晰，配合更小行高） ------------------- */
+  --grid-line:        #E6E9EF;            /* 单元格网格线 */
+  --grid-line-strong: var(--neutral-400); /* #CDD3DC 表头分隔 / 冻结线 / 选中框 */
+  --grid-header-bg:   var(--neutral-50);
+  --grid-rownum-bg:   var(--neutral-50);
+  --grid-row-alt:     var(--neutral-25);  /* 斑马纹（默认关闭，可选开启） */
+
+  /* ===========================================================================
+     3. 语义色（Semantic）— 系统态，仅出现在 chrome，不进入文档画布
+     全部前景色在 #FFFFFF 上 ≥ 4.5:1（AA 正文通过）
+     =========================================================================== */
+  --success-fg:     #15803D;  /* 5.02:1 */
+  --success-bg:     #E8F2EC;
+  --success-border: #B7DFC6;
+  --success-hover:  #116B33;
+
+  --warning-fg:     #B45309;  /* 5.02:1 */
+  --warning-bg:     #F8EEE6;
+  --warning-border: #F0D5AE;
+  --warning-hover:  #96460A;
+
+  --danger-fg:      #DC2626;  /* 4.83:1 */
+  --danger-bg:      #FCE9E9;
+  --danger-border:  #F3BDBD;
+  --danger-hover:   #B91C1C;
+
+  --info-fg:        var(--brand-500);  /* 与品牌蓝同色，不再引入第二个蓝 */
+  --info-bg:        var(--brand-tint-10);
+  --info-border:    var(--brand-200);
+
+  /* ===========================================================================
+     4. 协同 6 色（Collaboration）— 只用于「人」，永远伴随姓名标签
+     命名：主色（描边/竖条/光标/头像底）· ink（文字）· bg（10% 淡底）·
+           bg-strong（20% 强底）· ring（聚焦/光晕）
+     校验结论：
+       · 主色均 ≥ 3:1 vs 白 → 满足非文本 UI（描边/竖条/三角）
+       · #BA7517（3.72:1）与 #378ADD（3.59:1）不足 4.5:1 → 只要涉及「文字可读性」
+         就必须用 ink 变体。同一根因有两个触发面，两者都要管：
+           面 A 用主色写文字（深字压白底）        → 文字色换 -ink
+           面 B 用主色当背景、上面放白字（白字压协同色底）→ 背景色换 -ink
+         （面 B 命中：头像底 / 段首姓名胶囊 / 光标姓名标签 / 单元格所有者标签）
+         6 色中 4 色 ink = 主色（视觉零变化），仅琥珀 #8F5B08、亮蓝 #1A6BA6 会变深。
+       · #378ADD 与强调蓝 #2563EB 色相差仅 11° → 见「防混淆硬规则」（文档第 7 节）
+     =========================================================================== */
+  /* 1 · 深蓝 */
+  --collab-1:          #185FA5;  /* 6.53:1 */
+  --collab-1-ink:      #185FA5;
+  --collab-1-bg:       #E8EFF6;  /* 段落淡底 / 单元格淡描边底 */
+  --collab-1-bg-strong:#D3E2F0;
+  --collab-1-ring:     rgba(24, 95, 165, 0.22);
+
+  /* 2 · 琥珀 */
+  --collab-2:          #BA7517;  /* 3.72:1 — 禁用于文字 */
+  --collab-2-ink:      #8F5B08;  /* 5.73:1 — 姓名文字专用 */
+  --collab-2-bg:       #F8F1E8;
+  --collab-2-bg-strong:#F0E2CC;
+  --collab-2-ring:     rgba(186, 117, 23, 0.22);
+
+  /* 3 · 青绿 */
+  --collab-3:          #0F6E56;  /* 6.20:1 */
+  --collab-3-ink:      #0F6E56;
+  --collab-3-bg:       #E7F1EE;
+  --collab-3-bg-strong:#CFE4DD;
+  --collab-3-ring:     rgba(15, 110, 86, 0.22);
+
+  /* 4 · 紫 */
+  --collab-4:          #534AB7;  /* 6.93:1 */
+  --collab-4-ink:      #534AB7;
+  --collab-4-bg:       #EEEDF8;
+  --collab-4-bg-strong:#DCDAEF;
+  --collab-4-ring:     rgba(83, 74, 183, 0.22);
+
+  /* 5 · 玫红 */
+  --collab-5:          #993556;  /* 7.01:1 */
+  --collab-5-ink:      #993556;
+  --collab-5-bg:       #F5EBEE;
+  --collab-5-bg-strong:#EAD6DD;
+  --collab-5-ring:     rgba(153, 53, 86, 0.22);
+
+  /* 6 · 亮蓝（沿用用户既定值） */
+  --collab-6:          #378ADD;  /* 3.59:1 — 禁用于文字 */
+  --collab-6-ink:      #1A6BA6;  /* 5.68:1 — 姓名文字专用 */
+  --collab-6-bg:       #E9F1FA;
+  --collab-6-bg-strong:#D2E3F4;
+  --collab-6-ring:     rgba(55, 138, 221, 0.22);
+
+  /* 6-alt · 深青（★ 专家建议的可选替换，默认未启用）
+     理由：与强调蓝 #2563EB（色相 221°）色相差由 11° 拉大到 29°，
+           显著降低「协同蓝」被误读为「品牌蓝 / 选中态」的概率。
+     启用方式：把 --collab-6 / -ink / -bg 三行替换为 -alt 值即可，其余不用改。 */
+  --collab-6-alt:      #0E7490;  /* 5.36:1 */
+  --collab-6-alt-ink:  #0E7490;
+  --collab-6-alt-bg:   #E7F1F4;
+
+  /* 自己：不分配协同色。自己的光标用原生 caret，自己的选区用 --bg-selected。 */
+  --collab-self:       transparent;
+
+  /* ===========================================================================
+     5. 字体（Typography）
+     西文优先命中 Inter，中文回退到系统中文黑体，无需下载 webfont 也能用。
+     =========================================================================== */
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
+               "Source Han Sans SC", "Noto Sans SC", "Hiragino Sans GB",
+               sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Roboto Mono",
+               Consolas, "Liberation Mono", Menlo, monospace;
+  --font-serif: "Songti SC", "Source Han Serif SC", "Noto Serif SC",
+                "SimSun", Georgia, serif; /* 仅 Word 形态可选字体，默认不使用 */
+
+  /* -- 字号 / 行高 / 字重 --------------------------------------------------- */
+  --fs-display: 32px; --lh-display: 1.30; --fw-display: 700; --ls-display: -0.015em;
+  --fs-h1:      24px; --lh-h1:      1.50; --fw-h1:      600; --ls-h1:      -0.010em;
+  --fs-h2:      20px; --lh-h2:      1.50; --fw-h2:      600; --ls-h2:      -0.005em;
+  --fs-h3:      16px; --lh-h3:      1.50; --fw-h3:      600; --ls-h3:       0;
+  --fs-h4:      14px; --lh-h4:      1.50; --fw-h4:      600; --ls-h4:       0;
+  --fs-body-l:  16px; --lh-body-l:  1.75; --fw-body-l:  400; /* 文档正文 */
+  --fs-body:    14px; --lh-body:    1.75; --fw-body:    400; /* 界面正文 */
+  --fs-body-s:  13px; --lh-body-s:  1.60; --fw-body-s:  400; /* 表格单元格 / 次要 */
+  --fs-caption: 12px; --lh-caption: 1.50; --fw-caption:  400; /* 元信息 / 时间戳 */
+  --fs-micro:   11px; --lh-micro:   1.40; --fw-micro:    500; /* 徽标 / 角标（下限）*/
+  --fs-code:    13px; --lh-code:    1.60; --fw-code:     400; /* 公式栏 / 代码 */
+  --fs-button:  14px; --fw-button:  500; /* 中文按钮用 500，不用 600/700（会发糊）*/
+
+  /* -- 中文排版专项 --------------------------------------------------------- */
+  --cjk-latin-gap:        0.125em; /* 中西文之间 1/4 em 间隙 */
+  --cjk-body-letter-spacing: 0.01em;
+  --cjk-heading-letter-spacing: 0;
+  --cjk-max-weight:       600;     /* 中文字重上限，禁止 700+ */
+  --doc-measure:          45em;    /* 中文最佳每行 35–45 字 */
+
+  /* ===========================================================================
+     6. 间距（8px 网格）
+     =========================================================================== */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  24px;
+  --space-6:  32px;
+  --space-7:  48px;
+  --space-8:  64px;
+
+  /* ===========================================================================
+     7. 圆角（6–8px 体系）
+     =========================================================================== */
+  --radius-xs:   4px;   /* 徽标、chip、复选框、tooltip */
+  --radius-sm:   6px;   /* ★ 控件默认：按钮 / 输入框 / 下拉项 / 菜单 */
+  --radius-md:   8px;   /* ★ 容器默认：卡片 / 抽屉 / 模态 / 面板 */
+  --radius-lg:   12px;  /* 仅导入遮罩、空状态大面板 */
+  --radius-full: 999px; /* 头像 / 胶囊 / 圆点 */
+
+  /* ===========================================================================
+     8. 阴影（3 级，几乎不用）+ 聚焦环
+     =========================================================================== */
+  --shadow-none: none;
+  --shadow-1: 0 1px 2px rgba(17, 24, 39, 0.06), 0 2px 8px rgba(17, 24, 39, 0.06);
+  --shadow-2: 0 4px 16px rgba(17, 24, 39, 0.10);
+  --shadow-3: 0 8px 32px rgba(17, 24, 39, 0.14);
+
+  --focus-ring:        0 0 0 3px var(--brand-ring);
+  --focus-ring-strong: 0 0 0 3px var(--brand-ring-strong);
+  --focus-outline:     2px solid var(--brand-500);
+  --focus-outline-offset: 2px;
+
+  /* ===========================================================================
+     9. 动效（Motion）
+     =========================================================================== */
+  --duration-fast: 120ms;   /* 颜色 / 背景 */
+  --duration-base: 160ms;   /* 抽屉 / 下拉位移 */
+  --duration-slow: 240ms;   /* 模态 / 页面切换 */
+  --ease-out:   cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ===========================================================================
+     10. 层级（Z-index）
+     =========================================================================== */
+  --z-base:     0;
+  --z-sticky:   100;
+  --z-dropdown: 200;
+  --z-drawer:   300;
+  --z-modal:    400;
+  --z-popover:  500;
+  --z-toast:    600;
+
+  /* ===========================================================================
+     11. 尺寸（Layout / Control）
+     =========================================================================== */
+  --topbar-h:   48px;  /* 工作台顶栏 */
+  --toolbar-h:  40px;  /* 编辑器工具条（单条） */
+  --sidebar-w:  240px;
+  --sidebar-w-collapsed: 56px;
+  --drawer-w:   380px; /* 分享权限 / 历史版本 */
+  --modal-w:    480px;
+  --content-pad: 24px;
+  --card-min-w: 220px;
+  --card-gap:   16px;
+
+  --ctrl-h-sm:  28px;  /* 表格工具条 / 编辑器内小按钮 */
+  --ctrl-h-md:  32px;  /* ★ 界面默认 */
+  --ctrl-h-lg:  36px;  /* 新建主按钮等 */
+  --ctrl-px-sm: 8px;
+  --ctrl-px-md: 12px;
+  --ctrl-px-lg: 16px;
+
+  --icon-sm:    16px;
+  --icon-md:    20px;
+  --icon-lg:    24px;
+  --icon-stroke: 1.5px;
+
+  --avatar-xs:  20px;
+  --avatar-sm:  24px;  /* 顶栏头像组 */
+  --avatar-md:  32px;  /* 协作者面板 */
+  --avatar-overlap: 6px;
+  --avatar-ring-w: 1.5px;
+  --avatar-ring-c: var(--neutral-0);
+  --presence-dot: 6px;
+
+  /* ===========================================================================
+     12. 双密度：文档（宽松）vs 表格（紧凑）
+     =========================================================================== */
+  /* Word 形态 —— 宽松排版 */
+  --doc-content-w:      720px; /* ≈45 汉字/行 @16px */
+  --doc-page-w:         816px; /* 含左右 48px 页边距 */
+  --doc-page-pad:       48px;
+  --doc-font-size:      16px;
+  --doc-line-height:    1.75;  /* 28px 行框 */
+  --doc-para-gap:       12px;  /* 段后间距 */
+  --doc-h1-size:        22px;  --doc-h1-lh: 1.5; --doc-h1-mt: 24px; --doc-h1-mb: 12px;
+  --doc-h2-size:        18px;  --doc-h2-lh: 1.5; --doc-h2-mt: 20px; --doc-h2-mb: 8px;
+  --doc-list-item-gap:  4px;
+  --doc-quote-pl:       12px;
+  --doc-lockbar-w:      3px;   /* 段落左侧协同竖条（位于淡底「左外侧」，不吃淡底） */
+  --doc-lockbar-gap:    8px;   /* 竖条与正文间距；放外侧才正好是 8px，放内侧只剩 5px */
+
+  /* Excel 形态 —— 紧凑密度 */
+  --grid-row-h:         28px;  /* 数据行高（紧凑） */
+  --grid-header-h:      24px;  /* 列标头 A B C */
+  --grid-rownum-w:      44px;  /* 行号列宽 */
+  --grid-cell-px:       8px;
+  --grid-font-size:     13px;
+  --grid-line-height:   1.4;
+  --grid-formula-bar-h: 32px;
+  --grid-min-col-w:     72px;
+  --grid-freeze-shadow: 2px 0 0 rgba(17, 24, 39, 0.06); /* 冻结列细投影，不用大阴影 */
+  --grid-lock-triangle: 6px;   /* 单元格右上角占用小三角 */
+}
+
+
+/* =============================================================================
+   13. 关键原子类（Phase 3 可直接复用）
+   ============================================================================= */
+
+/* -- 焦点可见（键盘导航） --------------------------------------------------- */
+.focusable:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: var(--focus-outline);
+  outline-offset: var(--focus-outline-offset);
+  border-radius: var(--radius-sm);
+}
+
+/* -- 协同呼吸点（正在编辑） ------------------------------------------------- */
+@keyframes codoc-presence-pulse {
+  0%, 100% { opacity: 1;    transform: scale(1);    }
+  50%      { opacity: 0.45; transform: scale(0.82); }
+}
+.presence-dot {
+  width: var(--presence-dot);
+  height: var(--presence-dot);
+  border-radius: var(--radius-full);
+  background: var(--collab-1);
+  box-shadow: 0 0 0 var(--avatar-ring-w) var(--avatar-ring-c);
+  animation: codoc-presence-pulse 1.8s var(--ease-in-out) infinite;
+}
+
+/* -- 协同姓名胶囊 / 标签（★ 固化「协同色底 + 白字」的唯一正确写法） ----------
+   规则：底色必须用 -ink 变体，不能用主色。
+   原因：白字压在琥珀 #BA7517（3.72:1）/ 亮蓝 #378ADD（3.59:1）上不足 4.5:1，
+         与「禁止用主色写文字」是同一根因的两个触发面。
+   代价：6 色里 4 色 ink = 主色（视觉零变化），只有琥珀 / 亮蓝会略变深。
+   用法：<span class="collab-chip" style="--collab-chip-bg:var(--collab-2-ink)">李雷</span>
+   -------------------------------------------------------------------------- */
+.collab-chip {
+  --collab-chip-bg: var(--collab-1-ink);
+  display: inline-flex; align-items: center;
+  height: 18px; padding: 0 5px; border-radius: 3px;
+  background: var(--collab-chip-bg);
+  color: var(--neutral-0);
+  font-size: var(--fs-micro); font-weight: 600; line-height: 18px; white-space: nowrap;
+}
+/* 光标 / 段首胶囊：左下尖角指向锚点 */
+.collab-chip--anchor { border-radius: 3px 3px 3px 0; padding: 0 6px; }
+
+/* -- 段落锁竖条（★ 位于淡底左外侧，与正文间距正好 8px） ---------------------
+   淡底左右各外扩 8px（负 margin + padding 抵消，文本位置不偏移）；
+   竖条 left: -3px 紧贴淡底左外沿 → 竖条与正文间距 = 8px（= --space-2 刻度），
+   且同页所有被锁段落的竖条对齐成一条连续竖线。
+   ❌ 不要把竖条放进淡底内侧：间距只剩 5px，且竖条会吃掉淡底左边界。
+   -------------------------------------------------------------------------- */
+.para-lock {
+  position: relative;
+  margin: -2px -8px 10px; padding: 2px 8px;
+  background: var(--lock-bg, var(--bg-subtle));
+}
+.para-lock::before {
+  content: ""; position: absolute;
+  left: calc(-1 * var(--doc-lockbar-w)); top: 0; bottom: 0;
+  width: var(--doc-lockbar-w);
+  background: var(--lock-c, var(--collab-1));
+  border-radius: 2px;
+}
+
+/* -- 协同光标闪烁（仅编辑器聚焦时） ----------------------------------------- */
+@keyframes codoc-caret-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0.25; }
+}
+.collab-caret {
+  width: 2px;
+  background: var(--collab-1);
+  animation: codoc-caret-blink 1s step-end infinite;
+}
+
+/* -- 降低动效偏好 ---------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .presence-dot,
+  .collab-caret {
+    animation: none;
+  }
+  .presence-dot {
+    opacity: 1;
+    box-shadow: 0 0 0 var(--avatar-ring-w) var(--avatar-ring-c),
+                0 0 0 4px var(--collab-1-ring);
+  }
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* -- 中文排版基线 ----------------------------------------------------------- */
+.cjk {
+  font-family: var(--font-sans);
+  line-break: strict;
+  word-break: normal;
+  overflow-wrap: break-word;
+  text-align: justify;
+  text-justify: inter-ideograph;
+}
+.cjk p { margin: 0 0 var(--doc-para-gap); }
+.cjk-num {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+/* 中西文之间 1/4 em 间隙：内容生成时在交界处插入 <span class="cjk-pad"></span> */
+.cjk-pad { display: inline-block; width: var(--cjk-latin-gap); }
+
+/* -- 工具类 ---------------------------------------------------------------- */
+.u-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.u-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  border: 0;
+  margin: 0;
+}
