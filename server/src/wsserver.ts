@@ -11,6 +11,7 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
+import * as perm from './perm.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +21,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const messageSync = 0
 const messageAwareness = 1
 
+// y-protocols/sync 的子消息类型
+const syncStep1 = 0
+const syncStep2 = 1
+const syncUpdate = 2
+
 const PERSIST_DIR = path.resolve(__dirname, '../data')
 
 // open: 已连接可收发；connecting/closed 视为不可用
@@ -27,6 +33,18 @@ const wsReadyStateOpen = 1
 
 const docs = new Map<string, WSSharedDoc>()
 const saveTimers = new Map<string, NodeJS.Timeout>()
+
+/**
+ * 权限等级。连接建立时依据 token 解析一次，之后可被 HTTP 侧的改动刷新。
+ * view = 只读（能收不能发），none = 无权限（连接会被拒绝）。
+ */
+export type ConnLevel = 'owner' | 'manage' | 'edit' | 'view' | 'none'
+
+/** 每条连接绑定的身份与权限。conn 对象本身当作 key */
+const connMeta = new WeakMap<any, { docName: string; userId: string; level: ConnLevel }>()
+
+const canWrite = (level: ConnLevel) =>
+  level === 'owner' || level === 'manage' || level === 'edit'
 
 /**
  * 同用户去重：同一 user.id 只保留最新写入的一份 awareness（按 clock 比较），
@@ -158,6 +176,7 @@ const send = (doc: WSSharedDoc, conn: any, m: Uint8Array) => {
 }
 
 const closeConn = (doc: WSSharedDoc, conn: any) => {
+  connMeta.delete(conn)
   if (doc.conns.has(conn)) {
     const controlledIds = doc.conns.get(conn)!
     doc.conns.delete(conn)
@@ -174,19 +193,35 @@ const closeConn = (doc: WSSharedDoc, conn: any) => {
   }
 }
 
+/** 解析 y-websocket 消息里的 sync 子类型（0=step1 1=step2 2=update） */
+function syncSubType(message: Uint8Array): number {
+  const d = decoding.createDecoder(message)
+  decoding.readVarUint(d) // 外层 messageSync
+  return decoding.readVarUint(d)
+}
+
 const messageListener = (conn: any, doc: WSSharedDoc, message: Uint8Array) => {
   try {
     const encoder = encoding.createEncoder()
     const decoder = decoding.createDecoder(message)
     const messageType = decoding.readVarUint(decoder)
     switch (messageType) {
-      case messageSync:
+      case messageSync: {
+        const meta = connMeta.get(conn)
+        const level: ConnLevel = meta?.level ?? 'none'
+        const sub = syncSubType(message)
+        // 权限在这里真正落地：只读连接可以收（step1 会被正常应答、update 会广播给它），
+        // 但它发出的 step2 / update 一律丢弃，因此它的编辑永远进不了文档。
+        if (!canWrite(level) && sub !== syncStep1) {
+          return
+        }
         encoding.writeVarUint(encoder, messageSync)
         syncProtocol.readSyncMessage(decoder, encoder, doc, conn)
         if (encoding.length(encoder) > 1) {
           send(doc, conn, encoding.toUint8Array(encoder))
         }
         break
+      }
       case messageAwareness:
         awarenessProtocol.applyAwarenessUpdate(
           doc.awareness,
@@ -200,10 +235,27 @@ const messageListener = (conn: any, doc: WSSharedDoc, message: Uint8Array) => {
   }
 }
 
-export const setupWSConnection = (conn: any, docName: string) => {
+/** 解析某条连接应当拥有的权限（身份由登录会话解析出的 userId 决定） */
+function levelFor(docName: string, userId: string): ConnLevel {
+  const acc = perm.resolveAccess(docName, true, userId)
+  if (!acc.ok) return 'none'
+  return acc.level
+}
+
+export const setupWSConnection = (conn: any, docName: string, userId: string) => {
   conn.binaryType = 'arraybuffer'
+  const level = levelFor(docName, userId)
+  if (level === 'none') {
+    try {
+      conn.close(4403, 'no permission')
+    } catch {
+      /* ignore */
+    }
+    return
+  }
   const doc = getYDoc(docName)
   doc.conns.set(conn, new Set())
+  connMeta.set(conn, { docName, userId, level })
 
   conn.on('message', (message: ArrayBuffer) =>
     messageListener(conn, doc, new Uint8Array(message))
@@ -259,6 +311,34 @@ export const setupWSConnection = (conn: any, docName: string) => {
 }
 
 export const getDocNames = (): string[] => Array.from(docs.keys())
+
+/**
+ * 权限变更后重新解析房间内所有连接的权限。
+ * 被降级为 none 的连接直接断开——改权限必须立刻生效，不能等对方刷新页面。
+ */
+export function refreshRoomPerms(docName: string) {
+  const doc = docs.get(docName)
+  if (!doc) return
+  Array.from(doc.conns.keys()).forEach((conn) => {
+    const meta = connMeta.get(conn)
+    if (!meta) return
+    const next = levelFor(docName, meta.userId)
+    meta.level = next
+    if (next === 'none') closeConn(doc, conn)
+  })
+}
+
+/** 立即踢掉指定账号的连接（移除成员 / 收回链接时用） */
+export function kickUsers(docName: string, userIds: string[]) {
+  if (!userIds.length) return
+  const doc = docs.get(docName)
+  if (!doc) return
+  const set = new Set(userIds)
+  Array.from(doc.conns.keys()).forEach((conn) => {
+    const meta = connMeta.get(conn)
+    if (meta && set.has(meta.userId)) closeConn(doc, conn)
+  })
+}
 
 export interface LiveRoom {
   /** WebSocket 连接数（≈ 在线客户端数） */

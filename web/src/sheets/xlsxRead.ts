@@ -43,6 +43,8 @@ interface XFont {
   underline?: boolean
   strike?: boolean
   color?: string
+  /** 颜色是 Excel 的「自动色」（<color theme="1"/>），不该覆盖应用自己的默认文字色 */
+  colorAuto?: boolean
 }
 interface XFill {
   pattern?: string
@@ -215,7 +217,13 @@ function parseFonts(stylesXml: string, theme: string[]): XFont[] {
       f.underline = val === undefined || (val !== 'none' && val !== '0')
     }
     const cm = /<color\b([^>]*?)(?:\/>|>[\s\S]*?<\/color>)/i.exec(body)
-    if (cm) f.color = resolveColor(cm[1], theme)
+    if (cm) {
+      f.color = resolveColor(cm[1], theme)
+      // theme="1" 是 Excel 的「自动」颜色（默认字体就这么写），语义是"跟随主题默认"，
+      // 不是"指定成纯黑"。硬写成 #000000 会让导入的文字跟应用自己的默认文字色不一致，
+      // 看起来就像"文字颜色不对"，因此这里只做标记、不落到单元格样式上。
+      if (attr(cm[1], 'theme') === '1') f.colorAuto = true
+    }
     out.push(f)
   })
   return out
@@ -426,7 +434,8 @@ function buildCellStyle(
       if (f.italic) style.italic = true
       if (f.underline) style.underline = true
       if (f.strike) style.strike = true
-      if (f.color) style.color = f.color
+      // 自动色不落样式，交给应用默认文字色；真正指定的颜色（如表头白字）照常保留
+      if (f.color && !f.colorAuto) style.color = f.color
     }
   }
 
@@ -528,7 +537,9 @@ function parseWorksheet(xml: string, ctx: ParseContext): ParsedGrid {
   let maxC = -1
   let rowCursor = 0
 
-  eachMatch(xml, /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/gi, (rm) => {
+  // 注意 (?=[\s/>])：不加这个边界的话 <cols> / <rowBreaks> 也会被当成
+  // <c> / <row> 匹配进去，正则一路吞到下一个 </c>，整张表的结构就乱了
+  eachMatch(xml, /<row(?=[\s/>])([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/gi, (rm) => {
     const attrs = rm[1] ?? ''
     const body = rm[2] ?? ''
     const rAttr = attr(attrs, 'r')
@@ -543,7 +554,7 @@ function parseWorksheet(xml: string, ctx: ParseContext): ParsedGrid {
     }
 
     let colCursor = 0
-    eachMatch(body, /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/gi, (cm) => {
+    eachMatch(body, /<c(?=[\s/>])([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/gi, (cm) => {
       const cAttrs = cm[1] ?? ''
       const cBody = cm[2] ?? ''
       const ref = attr(cAttrs, 'r')
@@ -608,8 +619,9 @@ function parseWorksheet(xml: string, ctx: ParseContext): ParsedGrid {
 // ---------------------------------------------------------------- 入口
 
 function pickZip(files: Record<string, Uint8Array>, suffix: string): string | undefined {
+  const target = suffix.toLowerCase()
   for (const key of Object.keys(files)) {
-    if (key.toLowerCase().endsWith(suffix)) return key
+    if (key.toLowerCase().endsWith(target)) return key
   }
   return undefined
 }

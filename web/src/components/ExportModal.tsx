@@ -49,7 +49,7 @@ export default function ExportModal({
   onExportDoc?: (fmt: DocFormat) => void
 }) {
   const [stage, setStage] = useState<Stage>('choose')
-  const [fmt, setFmt] = useState<SheetFormat | DocFormat>('xlsx')
+  const [fmt, setFmt] = useState<SheetFormat | DocFormat>(kind === 'sheet' ? 'xlsx' : 'docx')
   const [currentOnly, setCurrentOnly] = useState(false)
   const [step, setStep] = useState(0)
   const timers = useRef<number[]>([])
@@ -68,7 +68,7 @@ export default function ExportModal({
   }, [open, kind])
 
   const formats = kind === 'sheet' ? SHEET_FORMATS : DOC_FORMATS
-  const active = formats.find((f) => f.id === fmt)!
+  const active = formats.find((f) => f.id === fmt) ?? formats[0]!
 
   const steps =
     kind === 'sheet'

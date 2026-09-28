@@ -32,3 +32,9 @@ node_modules/.cache/
 *_smoke*.mjs
 verify.mjs
 _ls.txt
+
+# ================= 数据库备份（本地磁盘保留，勿入版本库）=================
+server/data_backup_*/
+
+# ================= Vite 配置临时快照 =================
+*.timestamp-*.mjs

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as Y from 'yjs'
 import { useCollab } from '../store/useCollab'
 import { useAwareness } from '../store/useAwareness'
-import { useSheet } from '../sheets/useSheet'
+import { useSheet, DEFAULT_COLS, DEFAULT_ROWS } from '../sheets/useSheet'
 import SheetEditor from '../sheets/SheetEditor'
 import TopBar from '../components/TopBar'
 import { CollaboratorPanel, PresenceBar } from '../components/PresenceBar'
@@ -10,19 +10,14 @@ import { IdentityDialog } from '../components/GuestGate'
 import ShareDrawer from '../components/ShareDrawer'
 import HistoryDrawer from '../components/HistoryDrawer'
 import ExportModal, { type SheetFormat } from '../components/ExportModal'
-import { exportWorkbook, importWorkbook, type ImportedSheet } from '../sheets/io'
+import { exportWorkbook, importWorkbook, normalizeImportedSheet, type ImportedSheet } from '../sheets/io'
 import { readSheets } from '../store/loadDocData'
 import { download, sheetsToCsv, sheetsToMarkdown, printToPdf } from '../store/exporters'
 import type { CellData, MergeInfo } from '../sheets/useSheet'
-import { DEFAULT_COLS, DEFAULT_ROWS } from '../sheets/useSheet'
 import type { ImportPayload } from '../store/importPayload'
 import type { LocalUser } from '../store/user'
 import { api } from '../store/api'
-
-/** 导入后至少保留这么多行，方便继续编辑（不足时补空行，不影响原始数据） */
-const MIN_SHEET_ROWS = DEFAULT_ROWS
-/** 导入后至少保留这么多列（文件只有 8 列时也要能看到 Z，不能只到 H） */
-const MIN_SHEET_COLS = DEFAULT_COLS
+import { accessRevoked, forcedReadOnly, useMyAccess } from '../store/useMyAccess'
 
 interface Props {
   docId: string
@@ -44,7 +39,7 @@ export default function Editor({
   onBack,
   onDocRenamed,
 }: Props) {
-  const { ydoc, provider, user, rename } = useCollab(docId, identity)
+  const { ydoc, provider, user, rename } = useCollab(docId)
   const [docName, setDocName] = useState(name)
   const [renaming, setRenaming] = useState(false)
   const [showRename, setShowRename] = useState(false)
@@ -53,7 +48,15 @@ export default function Editor({
   const sheet = useSheet(ydoc, activeSheet)
   const [drawer, setDrawer] = useState<'none' | 'people' | 'share' | 'history'>('none')
   const [exportOpen, setExportOpen] = useState(false)
-  const [readOnly, setReadOnly] = useState(false)
+  /**
+   * 服务端权限是唯一权威：被所有者设为「只读」的人在这里就是只读，
+   * 再怎么点本地按钮也改不了（服务端会直接丢弃他的 Yjs 更新）。
+   * manualReadOnly 只是所有者自愿切换到查看模式，随时可以切回来。
+   */
+  const access = useMyAccess(docId)
+  const [manualReadOnly, setManualReadOnly] = useState(false)
+  const lockedByPerm = forcedReadOnly(access)
+  const readOnly = lockedByPerm || manualReadOnly
   const [jumpTo, setJumpTo] = useState<{ r: number; c: number } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimer = useRef<number | null>(null)
@@ -95,14 +98,20 @@ export default function Editor({
       Array.from(mergesMap.keys()).forEach((k) => mergesMap.delete(k))
       Array.from(colwMap.keys()).forEach((k) => colwMap.delete(k))
       Array.from(rowhMap.keys()).forEach((k) => rowhMap.delete(k))
-      sheets.forEach((s) => {
-        // 稠密化：行列必须补齐，否则 Yjs 会因 undefined 项直接抛错导致整次导入失败
-        // 列数同样要补到默认列数——否则导入 8 列的文件，网页上就只剩 A~H，没法继续往右写
+      sheets.forEach((raw) => {
+        // 归一化：合并区去重裁剪 + 覆盖区文字回收 + 去掉多余的空行空列
+        const s = normalizeImportedSheet(raw)
+        // 行列必须补齐成矩形，否则 Yjs 会因 undefined 项抛错、表格列也会错位。
+        // 导入不能把表格改小：文件尺寸不足应用默认尺寸（50 行 × 26 列）时补齐，
+        // 外围没填内容的格子照样保留下来（网格继续往下 / 往右延伸）。
+        // 补出来的格子一律是「无样式空单元格」——只占位，不带颜色 / 边框 / 字体，
+        // 免得导出时把一整片空格子刷上底色。
         const colCount = Math.max(
           s.rows.reduce((n, r) => Math.max(n, r.length), 0),
-          MIN_SHEET_COLS
+          1,
+          DEFAULT_COLS
         )
-        const rowCount = Math.max(s.rows.length, MIN_SHEET_ROWS)
+        const rowCount = Math.max(s.rows.length, 1, DEFAULT_ROWS)
         const arr = new Y.Array<Y.Array<CellData>>()
         for (let r = 0; r < rowCount; r++) {
           const src = s.rows[r]
@@ -201,6 +210,26 @@ export default function Editor({
     }
   }
 
+  // 权限被所有者收回：不再展示任何内容，给一个明确的去向
+  if (accessRevoked(access)) {
+    return (
+      <div className="guest-mask">
+        <div className="guest-card">
+          <div className="guest-badge">权限已收回</div>
+          <h2 className="guest-title">你已无法访问这份文档</h2>
+          <p className="guest-sub">
+            所有者取消了你的访问权限，或已收回分享链接。如需继续编辑，请向所有者重新申请。
+          </p>
+          <div className="modal-actions">
+            <button className="btn-primary" onClick={onBack}>
+              返回工作台
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="editor">
       <TopBar
@@ -211,7 +240,7 @@ export default function Editor({
         onPeople={() => setDrawer('people')}
         onHistory={() => setDrawer('history')}
         onExport={() => setExportOpen(true)}
-        onToggleReadOnly={() => setReadOnly((v) => !v)}
+        onToggleReadOnly={lockedByPerm ? undefined : () => setManualReadOnly((v) => !v)}
         readOnly={readOnly}
         fileRef={fileRef}
         peers={peers}
@@ -224,8 +253,10 @@ export default function Editor({
 
       {readOnly && (
         <div className="readonly-banner">
-          你正在以只读方式查看此表格，网格已锁定。
-          <button onClick={() => setReadOnly(false)}>恢复编辑</button>
+          {lockedByPerm
+            ? '你在份文档上是「只读」权限，网格已锁定；服务端会丢弃你的编辑请求。需要编辑请向所有者申请。'
+            : '你正在以只读方式查看此表格，网格已锁定。'}
+          {!lockedByPerm && <button onClick={() => setManualReadOnly(false)}>恢复编辑</button>}
         </div>
       )}
 

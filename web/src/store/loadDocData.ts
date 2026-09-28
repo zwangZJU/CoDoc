@@ -85,7 +85,11 @@ export function readSheets(ydoc: Y.Doc): SheetSnapshot[] {
 
 export interface BlockSnapshot {
   id: string
-  type: 'p' | 'h1' | 'h2' | 'h3' | 'li'
+  type:
+    | 'p'
+    | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'h7' | 'h8' | 'h9'
+    | 'ol' | 'li' | 'task'
+    | 'code' | 'quote' | 'callout' | 'sync'
   text: string
 }
 

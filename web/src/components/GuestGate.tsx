@@ -1,22 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import * as Y from 'yjs'
-import { WebsocketProvider } from 'y-websocket'
+import { api, type LinkPerm } from '../store/api'
 import { snapshotPeers } from '../store/useAwareness'
 import { COLLAB, colorOf, isValidName, type LocalUser } from '../store/user'
-
-// 与 useCollab 保持一致的 ws 地址拼接
-const WS_BASE =
-  (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/collab'
-
-/** 访客登记提交时回传的信息（由调用方决定如何存储 / 是否注册成成员） */
-export interface GuestJoinInfo {
-  name: string
-  colorIndex: number
-  /** 记住这台设备上的姓名（否则仅本次会话） */
-  remember: boolean
-  /** 把名字注册进文档成员名单，而不只是实时在线可见 */
-  register: boolean
-}
+import type { WebsocketProvider } from 'y-websocket'
 
 /** 首字作为头像文字：中文取姓/名首字，英文取首字母并大写 */
 function initialOf(name: string) {
@@ -58,183 +44,123 @@ function ColorPicker({
   )
 }
 
-/** 等待 y-websocket 首次 sync 完成（用于进入前取在线名单）；超时返回 true 也要查一次 */
-function waitForSync(p: WebsocketProvider, timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (p.synced) {
-      resolve()
-      return
-    }
-    let done = false
-    const finish = () => {
-      if (done) return
-      done = true
-      p.off('sync', onSync)
-      resolve()
-    }
-    const onSync = (s: boolean) => s && finish()
-    p.on('sync', onSync)
-    window.setTimeout(finish, timeoutMs)
-  })
-}
-
 /**
- * 访客身份登记：通过分享链接打开文档时显示，必须填姓名才能进入。
- * 填完之后才能建立协同连接——否则在线名单里只会是一堆「我」。
- * register 勾选时，调用方会把此人注册为文档成员（名字进后端成员名单）。
+ * 申请访问。
+ *
+ * 飞书的做法：没有权限的人看到的不是白屏或报错，而是"申请权限"页，
+ * 并且明确告诉他找谁申请。
+ *
+ * 这里不再让用户填名字——访问者必须先登录，登记的是账号 userId，
+ * 因此同一个人换设备、换浏览器再来，审批记录和权限都还是他的。
  */
 export function GuestGate({
   docName,
   docId,
-  onJoin,
+  ownerName,
+  /** true = 这份文档没有开放链接，提交后进入审批而不是直接进入 */
+  needApproval,
+  me,
+  onGranted,
+  onPending,
+  onBack,
 }: {
   docName: string
-  /** 文档 id：用于进入前预连协同房间，校验名字是否已被在线者占用 */
   docId: string
-  onJoin: (info: GuestJoinInfo) => void
+  ownerName?: string
+  needApproval: boolean
+  /** 当前登录账号：用它提交申请，不再现场填名字 */
+  me: LocalUser
+  onGranted: () => void
+  onPending: () => void
+  onBack: () => void
 }) {
-  const [name, setName] = useState('')
-  const [colorIndex, setColorIndex] = useState(() => Math.floor(Math.random() * COLLAB.length))
-  const [remember, setRemember] = useState(true)
-  const [register, setRegister] = useState(true)
-  const [touched, setTouched] = useState(false)
-  const [dup, setDup] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-  // 只用于在线查重，不做事后名单；进入文档后由 useCollab 重建连接
-  const probeRef = useRef<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null)
-
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
-  const ok = isValidName(name)
-  // 进入前预连协同房间，用于校验名字是否在线占用（normalize 后比较）
-  const ensureProbe = (): { ydoc: Y.Doc; provider: WebsocketProvider } => {
-    if (probeRef.current) return probeRef.current
-    const ydoc = new Y.Doc()
-    const provider = new WebsocketProvider(WS_BASE, docId, ydoc, { connect: true })
-    probeRef.current = { ydoc, provider }
-    return probeRef.current
-  }
-
-  const normalize = (s: string) => s.trim().toLowerCase()
-
-  /** 名字是否已被当前文档的其他在线协作者占用（不含自己与未命名的连接） */
-  const isNameTaken = useCallback(
-    (candidate: string) => {
-      const probe = probeRef.current
-      if (!probe) return false
-      const n = normalize(candidate)
-      return snapshotPeers(probe.provider).some(
-        (p) => p.user?.name && normalize(p.user.name) === n
-      )
-    },
-    []
-  )
-
-  // 输入时实时提示占用（去抖），与提交时二次校验互补
-  useEffect(() => {
-    if (!ok || !docId) {
-      setDup(false)
-      return
-    }
-    let alive = true
-    const t = window.setTimeout(async () => {
-      if (!alive) return
-      const probe = ensureProbe()
-      await waitForSync(probe.provider, 1500)
-      if (alive) setDup(isNameTaken(name))
-    }, 600)
-    return () => {
-      alive = false
-      window.clearTimeout(t)
-    }
-  }, [name, ok, docId, isNameTaken])
+  const [want, setWant] = useState<LinkPerm>('edit')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
 
   const submit = async () => {
-    setTouched(true)
-    if (!ok) {
-      inputRef.current?.focus()
-      return
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await api.joinDoc(docId, want, note)
+      if (r.status === 'granted') onGranted()
+      else onPending()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
     }
-    // 提交时最终校验：确保协同连接就绪后查一次（防实时提示未生效直接回车绕过）
-    const probe = ensureProbe()
-    await waitForSync(probe.provider, 1500)
-    if (isNameTaken(name)) {
-      setDup(true)
-      inputRef.current?.focus()
-      return
-    }
-    // 清理探测连接，避免带着一个多余的空连接进入文档
-    if (probeRef.current) {
-      probeRef.current.provider.destroy()
-      probeRef.current = null
-    }
-    onJoin({ name: name.trim(), colorIndex, remember, register })
   }
 
   return (
     <div className="guest-mask">
       <div className="guest-card">
         <div>
-          <div className="guest-badge">访客身份</div>
-          <h2 className="guest-title">你正在打开一份共享文档</h2>
+          <div className="guest-badge">{needApproval ? '需要授权' : '访客身份'}</div>
+          <h2 className="guest-title">
+            {needApproval ? '这份文档仅指定成员可访问' : '你正在打开一份共享文档'}
+          </h2>
           <p className="guest-sub">
-            《{docName || '未命名文档'}》通过分享链接打开，不需要登录。
-            填个名字，其他人就能在右上角看到「谁在编辑」，你的修改也会标记成你的。
+            {needApproval ? (
+              <>
+                《{docName || '未命名文档'}》没有开放链接分享。以当前账号提交申请，
+                {ownerName ? ` ${ownerName}` : '文档所有者'}批准后即可进入，无需重新打开链接。
+              </>
+            ) : (
+              <>
+                《{docName || '未命名文档'}》通过分享链接打开。
+                确认后其他人就能在右上角看到「谁在编辑」，你的修改也会标记成你的。
+              </>
+            )}
           </p>
         </div>
 
         <div className="guest-row">
-          <AvatarPreview name={name} colorIndex={colorIndex} />
+          <AvatarPreview name={me.name} colorIndex={me.colorIndex} />
           <div className="guest-pick">
-            <ColorPicker value={colorIndex} onChange={setColorIndex} />
-            <span className="guest-pick-hint">选个头像颜色，用来区分不同的编辑者</span>
+            <div className="guest-who">{me.name}</div>
+            <span className="guest-pick-hint">
+              当前登录账号{me.email ? `（${me.email}）` : ''}，将用它申请访问
+            </span>
           </div>
         </div>
 
-        <label className="field-label" htmlFor="guest-name">
-          你的姓名
-        </label>
-        <input
-          id="guest-name"
-          ref={inputRef}
-          className="modal-input"
-          placeholder="例如：张三 / Alice"
-          maxLength={12}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
-        />
-        {touched && !ok && (
-          <p className="guest-err">请填写 1–12 个字符的姓名，方便其他人认出你。</p>
-        )}
-        {dup && (
-          <p className="guest-err" role="alert">
-            这个名字已被在线协作者占用，请换一个名字。
-          </p>
+        {needApproval && (
+          <>
+            <label className="field-label">申请的权限</label>
+            <div className="segmented">
+              <button className={want === 'view' ? 'active' : ''} onClick={() => setWant('view')}>
+                只查看
+              </button>
+              <button className={want === 'edit' ? 'active' : ''} onClick={() => setWant('edit')}>
+                可编辑
+              </button>
+            </div>
+
+            <label className="field-label" htmlFor="guest-note">
+              申请理由（选填）
+            </label>
+            <input
+              id="guest-note"
+              className="modal-input"
+              placeholder="例如：项目组同事，需要一起整理数据"
+              maxLength={60}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submit()}
+            />
+          </>
         )}
 
-        <label className="guest-remember">
-          <input
-            type="checkbox"
-            checked={register}
-            onChange={(e) => setRegister(e.target.checked)}
-          />
-          注册为文档成员（名字加入协作名单，可在分享面板看到）
-        </label>
-        <label className="guest-remember">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
-          />
-          记住这个名字，以后在本机打开链接不用再填
-        </label>
+        {err && <p className="guest-err">{err}</p>}
 
         <div className="modal-actions">
-          <button className="btn-primary" disabled={!ok} onClick={submit}>
-            进入文档
+          <button className="btn-ghost" onClick={onBack}>
+            返回
+          </button>
+          <button className="btn-primary" disabled={busy} onClick={submit}>
+            {busy ? '提交中…' : needApproval ? '提交申请' : '进入文档'}
           </button>
         </div>
       </div>
@@ -321,6 +247,75 @@ export function IdentityDialog({
           </button>
           <button className="btn-primary" disabled={!ok} onClick={save}>
             保存
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 等待批准 / 被拒绝。
+ * 每 5 秒问一次后端：所有者批准后自动放行，不必让用户刷新页面。
+ */
+export function AccessWaiting({
+  docName,
+  docId,
+  ownerName,
+  rejected,
+  onGranted,
+  onBack,
+}: {
+  docName: string
+  docId: string
+  ownerName?: string
+  rejected: boolean
+  onGranted: () => void
+  onBack: () => void
+}) {
+  const [tick, setTick] = useState(0)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    if (docId === '') return
+    let alive = true
+    const timer = window.setInterval(async () => {
+      try {
+        const me = await api.getMyAccess(docId)
+        if (!alive) return
+        if (me.level !== 'none') {
+          onGranted()
+          return
+        }
+        setTick((t) => t + 1)
+      } catch (e) {
+        if (alive) setErr(e instanceof Error ? e.message : String(e))
+      }
+    }, 5000)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [docId, onGranted])
+
+  return (
+    <div className="guest-mask">
+      <div className="guest-card">
+        <div className="guest-badge">{rejected ? '申请未通过' : '等待批准'}</div>
+        <h2 className="guest-title">
+          {rejected ? '所有者没有通过你的申请' : '已提交，等待所有者批准'}
+        </h2>
+        <p className="guest-sub">
+          《{docName || '未命名文档'}》
+          {rejected
+            ? '的申请已被拒绝。如果确有需要，请直接联系文档所有者。'
+            : `已通知${ownerName ? ` ${ownerName}` : '文档所有者'}，批准后这个页面会自动进入文档，不用刷新。`}
+          {tick > 0 && !rejected && '（每 5 秒自动检查一次）'}
+        </p>
+        {err && <p className="guest-err">{err}</p>}
+        <div className="modal-actions">
+          <button className="btn-ghost" onClick={onBack}>
+            返回工作台
           </button>
         </div>
       </div>

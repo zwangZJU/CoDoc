@@ -93,6 +93,8 @@ interface TbButtonProps {
   icon?: IconName
   iconNode?: React.ReactNode
   text?: string
+  /** 长标签按给定行拆成多行显示（如「查找和替换」→ ['查找和', '替换']） */
+  textLines?: string[]
   title?: string
   active?: boolean
   disabled?: boolean
@@ -111,6 +113,7 @@ function TbButton({
   icon,
   iconNode,
   text,
+  textLines,
   title,
   active,
   disabled,
@@ -122,16 +125,27 @@ function TbButton({
   className,
 }: TbButtonProps) {
   const main = onMain ?? onClick
+  const labelNode = textLines?.length ? (
+    <span className="tb-btn-text tb-btn-text-multi">
+      {textLines.map((l) => (
+        <span key={l} className="tb-btn-line">
+          {l}
+        </span>
+      ))}
+    </span>
+  ) : text ? (
+    <span className="tb-btn-text">{text}</span>
+  ) : null
   const content = (
     <>
       {iconNode ?? (icon ? <Ico n={icon} size={16} /> : null)}
-      {text && <span className="tb-btn-text">{text}</span>}
+      {labelNode}
     </>
   )
   const cls =
     'tb-btn' +
     (stacked ? ' tb-btn-st' : '') +
-    (text ? ' has-text' : '') +
+    (text || textLines?.length ? ' has-text' : '') +
     (active ? ' active' : '') +
     (className ? ' ' + className : '')
   // 带下拉：主体与箭头分成两个热区（主体做默认动作，箭头开菜单）
@@ -201,6 +215,7 @@ export function TbPop({
   icon,
   iconNode,
   text,
+  textLines,
   title,
   active,
   disabled,
@@ -217,6 +232,7 @@ export function TbPop({
   icon?: IconName
   iconNode?: React.ReactNode
   text?: string
+  textLines?: string[]
   title?: string
   active?: boolean
   disabled?: boolean
@@ -239,6 +255,7 @@ export function TbPop({
         icon={icon}
         iconNode={iconNode}
         text={text}
+        textLines={textLines}
         title={title}
         active={active ?? open}
         disabled={disabled}
@@ -502,16 +519,6 @@ const PERCENT_FMTS = [
   { label: '百分比 0%', code: '0%' },
   { label: '百分比 0.00%', code: '0.00%' },
 ]
-const DECIMAL_FMTS = [
-  { label: '整数（0 位小数）', code: '0' },
-  { label: '1 位小数 0.0', code: '0.0' },
-  { label: '2 位小数 0.00', code: '0.00' },
-  { label: '3 位小数 0.000', code: '0.000' },
-]
-const THOUSAND_FMTS = [
-  { label: '千位分隔（整数）12,346', code: '#,##0' },
-  { label: '千位分隔（2 位小数）12,345.68', code: '#,##0.00' },
-]
 
 /* ------------------------------------------------------------------ */
 /* 主组件                                                              */
@@ -622,12 +629,30 @@ export default function SheetToolbar(props: SheetToolbarProps) {
     onNotify(code ? '已应用' + label : '已恢复常规格式')
   }
 
+  // ---- 小数位增减（图片中的 .00 / .0 快捷按钮） ----
+  const bumpDecimal = (dir: 1 | -1) => {
+    const code = curStyle?.numfmt ?? ''
+    const m = /^0\.(0+)$/.exec(code)
+    const next =
+      dir > 0
+        ? m
+          ? `0.${m[1]}0`
+          : '0.0'
+        : m
+          ? m[1].length > 1
+            ? `0.${m[1].slice(0, -1)}`
+            : '0'
+          : '0'
+    sheet.setNumFmt(range.r1, range.c1, range.r2, range.c2, next)
+    onNotify(next === '0' ? '已恢复整数格式' : `已应用格式 ${next}`)
+  }
+
   return (
     <div className={'sheet-toolbar-v2' + (locked ? ' locked' : '')}>
-      {/* ============ 单行工具条（腾讯文档式布局） ============ */}
-      <div className="tb-row tb-row-single">
-        {/* 视图 / 菜单 */}
-        <TbPop icon="view-split" text={undefined} title="菜单" width={232}>
+      {/* ============ 腾讯文档式工具带：堆叠按钮跨两行 + 上/下行配对组 ============ */}
+      <div className="tb-main">
+        {/* —— 菜单 —— */}
+        <TbPop stacked icon="view-split" text="菜单" title="菜单" width={232}>
           {(close) => (
             <>
               <MenuGroup title="编辑" />
@@ -746,7 +771,7 @@ export default function SheetToolbar(props: SheetToolbarProps) {
 
         <span className="tb-div" />
 
-        {/* 撤销 / 重做 / 格式刷 / 清除格式 */}
+        {/* —— 撤销 / 重做 / 格式刷 / 清除格式 —— */}
         <TbButton
           stacked
           icon="undo"
@@ -824,7 +849,7 @@ export default function SheetToolbar(props: SheetToolbarProps) {
 
         <span className="tb-div" />
 
-        {/* 插入 */}
+        {/* —— 插入 —— */}
         <TbPop stacked icon="insert" text="插入" title="插入行列 / 链接 / 批注 / 函数" width={214} disabled={locked}>
           {(close) => (
             <>
@@ -864,462 +889,397 @@ export default function SheetToolbar(props: SheetToolbarProps) {
 
         <span className="tb-div" />
 
-        {/* 加粗 / 斜体 / 下划线 / 删除线 / 文字色 / 填充 */}
-        <TbButton icon="bold" title="加粗 Ctrl+B" active={!!curStyle?.bold} disabled={locked} onClick={() => applyStyle({ bold: !curStyle?.bold })} />
-        <TbButton icon="italic" title="斜体 Ctrl+I" active={!!curStyle?.italic} disabled={locked} onClick={() => applyStyle({ italic: !curStyle?.italic })} />
-        <TbButton icon="underline" title="下划线 Ctrl+U" active={!!curStyle?.underline} disabled={locked} onClick={() => applyStyle({ underline: !curStyle?.underline })} />
-        <TbButton icon="strike" title="删除线" active={!!curStyle?.strike} disabled={locked} onClick={() => applyStyle({ strike: !curStyle?.strike })} />
-        <TbPop
-          width={268}
-          disabled={locked}
-          title="文字颜色"
-          iconNode={
-            <span className="tb-color-a">
-              <span className="tb-color-a-char">A</span>
-              <span className="tb-color-a-bar" style={{ background: curStyle?.color || DEFAULT_TEXT_COLOR }} />
-            </span>
-          }
-        >
-          {(close) => (
-            <ColorPalette
-              value={curStyle?.color}
-              allowClear
-              clearLabel="恢复默认文字色"
-              onPick={(c) => {
-                applyStyle({ color: c || undefined })
-                close()
-              }}
-            />
-          )}
-        </TbPop>
-        <TbPop
-          width={268}
-          disabled={locked}
-          title="单元格填充色"
-          iconNode={
-            <span className="tb-color-a">
-              <Ico n="fill" size={16} />
-              <span
-                className="tb-color-a-bar"
-                style={{ background: curStyle?.bg || 'transparent', boxShadow: 'inset 0 0 0 1px var(--border-default)' }}
-              />
-            </span>
-          }
-        >
-          {(close) => (
-            <ColorPalette
-              value={curStyle?.bg}
-              allowClear
-              clearLabel="无填充色"
-              onPick={(c) => {
-                applyStyle({ bg: c || undefined })
-                close()
-              }}
-            />
-          )}
-        </TbPop>
+        {/* —— 上行：字体｜下行：加粗 删除线 斜体 —— */}
+        <div className="tb-pair">
+          <div className="tb-pair-row">
+            <TbPop
+              text={fontOptions.find((f) => f.value === (curStyle?.font ?? ''))?.label || '默认字体'}
+              width={168}
+              disabled={locked}
+              title="字体"
+            >
+              {(close) => (
+                <>
+                  {fontOptions.map((f) => (
+                    <MenuItem
+                      key={f.value}
+                      label={f.label}
+                      active={(curStyle?.font ?? '') === f.value}
+                      onClick={() => {
+                        applyStyle({ font: f.value || undefined })
+                        close()
+                      }}
+                    />
+                  ))}
+                </>
+              )}
+            </TbPop>
+          </div>
+          <div className="tb-pair-row">
+            <TbButton icon="bold" title="加粗 Ctrl+B" active={!!curStyle?.bold} disabled={locked} onClick={() => applyStyle({ bold: !curStyle?.bold })} />
+            <TbButton icon="strike" title="删除线" active={!!curStyle?.strike} disabled={locked} onClick={() => applyStyle({ strike: !curStyle?.strike })} />
+            <TbButton icon="italic" title="斜体 Ctrl+I" active={!!curStyle?.italic} disabled={locked} onClick={() => applyStyle({ italic: !curStyle?.italic })} />
+          </div>
+        </div>
 
-        <span className="tb-div" />
-
-        {/* 字体 / 字号 / 边框 */}
-        <TbPop
-          text={fontOptions.find((f) => f.value === (curStyle?.font ?? ''))?.label || '默认字体'}
-          width={168}
-          disabled={locked}
-          className="tb-font"
-        >
-          {(close) => (
-            <>
-              {fontOptions.map((f) => (
-                <MenuItem
-                  key={f.value}
-                  label={f.label}
-                  active={(curStyle?.font ?? '') === f.value}
-                  onClick={() => {
-                    applyStyle({ font: f.value || undefined })
-                    close()
-                  }}
-                />
-              ))}
-            </>
-          )}
-        </TbPop>
-        <TbPop text={String(curStyle?.size ?? 10)} width={92} disabled={locked} className="tb-size">
-          {(close) => (
-            <>
-              <MenuItem
-                label="默认"
-                active={!curStyle?.size}
-                onClick={() => {
-                  applyStyle({ size: undefined })
-                  close()
-                }}
-              />
-              {sizeOptions.map((s) => (
-                <MenuItem
-                  key={s}
-                  label={String(s)}
-                  active={curStyle?.size === s}
-                  onClick={() => {
-                    applyStyle({ size: s })
-                    close()
-                  }}
-                />
-              ))}
-            </>
-          )}
-        </TbPop>
-        <TbPop
-          icon="border"
-          title="边框"
-          active={borderPaint.drawing}
-          width={288}
-          arrow={false}
-          disabled={locked}
-        >
-          {(close) => (
-            <div className="bg-pop" onMouseDown={(e) => e.preventDefault()}>
-              <div className="bg-grid">
-                {BORDER_ITEMS.map((it) => (
-                  <button
-                    type="button"
-                    key={it.key}
-                    className={'bg-cell' + (borderPaint.drawing && borderPaint.mode === it.map ? ' on' : '')}
-                    title={it.label}
-                    onClick={() => {
-                      onBorderPaint({ ...borderPaint, mode: it.map, drawing: false })
-                      const b: BorderSide | null =
-                        it.map === 'clear' ? null : { w: it.w ?? borderPaint.w, c: borderPaint.c }
-                      sheet.applyBorder(range.r1, range.c1, range.r2, range.c2, it.map, b)
-                      onNotify('已应用' + it.label)
-                      close()
-                    }}
-                  >
-                    <BorderGlyphIcon kind={it.key} />
-                  </button>
-                ))}
-              </div>
-              <div className="bg-tools">
-                <button
-                  type="button"
-                  className={'bg-draw' + (borderPaint.drawing ? ' on' : '')}
-                  title={borderPaint.drawing ? '退出绘制边框' : '绘制边框：开启后在网格上框选即可落笔'}
-                  onClick={() => {
-                    onBorderPaint({ ...borderPaint, drawing: !borderPaint.drawing })
-                    close()
-                  }}
-                >
-                  <Ico n="painter" size={16} />
-                </button>
-                <select
-                  className="bg-select"
-                  value={borderPaint.w}
-                  title="边框粗细"
-                  onChange={(e) => onBorderPaint({ ...borderPaint, w: Number(e.target.value) })}
-                >
-                  <option value={1}>细</option>
-                  <option value={1.5}>中</option>
-                  <option value={2.5}>粗</option>
-                </select>
-                <span className="bg-line-preview" style={{ height: borderPaint.w, background: borderPaint.c }} />
-                <label className="bg-swatch" title="边框颜色">
-                  <span style={{ background: borderPaint.c }} />
-                  <input
-                    type="color"
-                    value={borderPaint.c}
-                    onChange={(e) => onBorderPaint({ ...borderPaint, c: e.target.value })}
-                  />
-                </label>
-              </div>
-            </div>
-          )}
-        </TbPop>
-
-        <span className="tb-div" />
-
-        {/* 垂直对齐 ×3（主体直接应用，箭头开菜单） */}
-        {(
-          [
-            ['top', 'valign-top', '顶端对齐'],
-            ['middle', 'valign-middle', '垂直居中'],
-            ['bottom', 'valign-bottom', '底端对齐'],
-          ] as const
-        ).map(([v, icon, label]) => (
-          <TbPop
-            key={v}
-            icon={icon}
-            title={label}
-            width={150}
-            disabled={locked}
-            active={(curStyle?.valign ?? 'middle') === v}
-            onMain={() => applyStyle({ valign: v })}
-          >
-            {(close) => (
-              <>
-                {(
-                  [
-                    ['top', '顶端对齐', 'valign-top'],
-                    ['middle', '垂直居中', 'valign-middle'],
-                    ['bottom', '底端对齐', 'valign-bottom'],
-                  ] as const
-                ).map(([val, lab, ico]) => (
+        {/* —— 上行：字号｜下行：下划线 文字色 —— */}
+        <div className="tb-pair">
+          <div className="tb-pair-row">
+            <TbPop text={String(curStyle?.size ?? 10)} width={92} disabled={locked} title="字号">
+              {(close) => (
+                <>
                   <MenuItem
-                    key={val}
-                    label={lab}
-                    icon={ico as IconName}
-                    active={(curStyle?.valign ?? 'middle') === val}
+                    label="默认"
+                    active={!curStyle?.size}
                     onClick={() => {
-                      applyStyle({ valign: val })
+                      applyStyle({ size: undefined })
                       close()
                     }}
                   />
-                ))}
-              </>
-            )}
-          </TbPop>
-        ))}
+                  {sizeOptions.map((s) => (
+                    <MenuItem
+                      key={s}
+                      label={String(s)}
+                      active={curStyle?.size === s}
+                      onClick={() => {
+                        applyStyle({ size: s })
+                        close()
+                      }}
+                    />
+                  ))}
+                </>
+              )}
+            </TbPop>
+          </div>
+          <div className="tb-pair-row">
+            <TbButton icon="underline" title="下划线 Ctrl+U" active={!!curStyle?.underline} disabled={locked} onClick={() => applyStyle({ underline: !curStyle?.underline })} />
+            <TbPop
+              width={268}
+              disabled={locked}
+              title="文字颜色"
+              iconNode={
+                <span className="tb-color-a">
+                  <span className="tb-color-a-char">A</span>
+                  <span className="tb-color-a-bar" style={{ background: curStyle?.color || DEFAULT_TEXT_COLOR }} />
+                </span>
+              }
+            >
+              {(close) => (
+                <ColorPalette
+                  value={curStyle?.color}
+                  allowClear
+                  clearLabel="恢复默认文字色"
+                  onPick={(c) => {
+                    applyStyle({ color: c || undefined })
+                    close()
+                  }}
+                />
+              )}
+            </TbPop>
+          </div>
+        </div>
 
-        {/* 水平对齐 ×4 */}
-        {(
-          [
-            ['left', 'align-left', '左对齐'],
-            ['center', 'align-center', '居中对齐'],
-            ['right', 'align-right', '右对齐'],
-          ] as const
-        ).map(([v, icon, label]) => (
-          <TbPop
-            key={v}
-            icon={icon}
-            title={label}
-            width={150}
-            disabled={locked}
-            active={(curStyle?.align ?? 'left') === v}
-            onMain={() => applyStyle({ align: v })}
-          >
-            {(close) => (
-              <>
-                {(
-                  [
-                    ['left', '左对齐', 'align-left'],
-                    ['center', '居中对齐', 'align-center'],
-                    ['right', '右对齐', 'align-right'],
-                  ] as const
-                ).map(([val, lab, ico]) => (
+        {/* —— 上行：边框｜下行：填充 —— */}
+        <div className="tb-pair">
+          <div className="tb-pair-row">
+            <TbPop icon="border" title="边框" active={borderPaint.drawing} width={288} disabled={locked}>
+              {(close) => (
+                <div className="bg-pop" onMouseDown={(e) => e.preventDefault()}>
+                  <div className="bg-grid">
+                    {BORDER_ITEMS.map((it) => (
+                      <button
+                        type="button"
+                        key={it.key}
+                        className={'bg-cell' + (borderPaint.drawing && borderPaint.mode === it.map ? ' on' : '')}
+                        title={it.label}
+                        onClick={() => {
+                          onBorderPaint({ ...borderPaint, mode: it.map, drawing: false })
+                          const b: BorderSide | null =
+                            it.map === 'clear' ? null : { w: it.w ?? borderPaint.w, c: borderPaint.c }
+                          sheet.applyBorder(range.r1, range.c1, range.r2, range.c2, it.map, b)
+                          onNotify('已应用' + it.label)
+                          close()
+                        }}
+                      >
+                        <BorderGlyphIcon kind={it.key} />
+                      </button>
+                    ))}
+                  </div>
+                  <div className="bg-tools">
+                    <button
+                      type="button"
+                      className={'bg-draw' + (borderPaint.drawing ? ' on' : '')}
+                      title={borderPaint.drawing ? '退出绘制边框' : '绘制边框：开启后在网格上框选即可落笔'}
+                      onClick={() => {
+                        onBorderPaint({ ...borderPaint, drawing: !borderPaint.drawing })
+                        close()
+                      }}
+                    >
+                      <Ico n="painter" size={16} />
+                    </button>
+                    <select
+                      className="bg-select"
+                      value={borderPaint.w}
+                      title="边框粗细"
+                      onChange={(e) => onBorderPaint({ ...borderPaint, w: Number(e.target.value) })}
+                    >
+                      <option value={1}>细</option>
+                      <option value={1.5}>中</option>
+                      <option value={2.5}>粗</option>
+                    </select>
+                    <span className="bg-line-preview" style={{ height: borderPaint.w, background: borderPaint.c }} />
+                    <label className="bg-swatch" title="边框颜色">
+                      <span style={{ background: borderPaint.c }} />
+                      <input
+                        type="color"
+                        value={borderPaint.c}
+                        onChange={(e) => onBorderPaint({ ...borderPaint, c: e.target.value })}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </TbPop>
+          </div>
+          <div className="tb-pair-row">
+            <TbPop
+              width={268}
+              disabled={locked}
+              title="单元格填充色"
+              iconNode={
+                <span className="tb-color-a">
+                  <Ico n="fill" size={16} />
+                  <span
+                    className="tb-color-a-bar"
+                    style={{ background: curStyle?.bg || 'transparent', boxShadow: 'inset 0 0 0 1px var(--border-default)' }}
+                  />
+                </span>
+              }
+            >
+              {(close) => (
+                <ColorPalette
+                  value={curStyle?.bg}
+                  allowClear
+                  clearLabel="无填充色"
+                  onPick={(c) => {
+                    applyStyle({ bg: c || undefined })
+                    close()
+                  }}
+                />
+              )}
+            </TbPop>
+          </div>
+        </div>
+
+        <span className="tb-div" />
+
+        {/* —— 上行：垂直对齐×3｜下行：水平对齐×3 —— */}
+        <div className="tb-pair">
+          <div className="tb-pair-row">
+            {(
+              [
+                ['top', 'valign-top', '顶端对齐'],
+                ['middle', 'valign-middle', '垂直居中'],
+                ['bottom', 'valign-bottom', '底端对齐'],
+              ] as const
+            ).map(([v, icon, label]) => (
+              <TbButton
+                key={v}
+                icon={icon}
+                title={label}
+                disabled={locked}
+                active={(curStyle?.valign ?? 'middle') === v}
+                onClick={() => applyStyle({ valign: v })}
+              />
+            ))}
+          </div>
+          <div className="tb-pair-row">
+            {(
+              [
+                ['left', 'align-left', '左对齐'],
+                ['center', 'align-center', '居中对齐'],
+                ['right', 'align-right', '右对齐'],
+              ] as const
+            ).map(([v, icon, label]) => (
+              <TbButton
+                key={v}
+                icon={icon}
+                title={label}
+                disabled={locked}
+                active={(curStyle?.align ?? 'left') === v}
+                onClick={() => applyStyle({ align: v })}
+              />
+            ))}
+          </div>
+        </div>
+
+        <span className="tb-div" />
+
+        {/* —— 上行：换行 缩进｜下行：合并单元格 —— */}
+        <div className="tb-pair">
+          <div className="tb-pair-row">
+            <TbButton
+              icon="wrap"
+              title="自动换行"
+              active={!!curStyle?.wrap}
+              disabled={locked}
+              onClick={() => applyStyle({ wrap: !curStyle?.wrap })}
+            />
+            <TbButton icon="indent-inc" title="增加缩进（即将支持）" disabled onClick={() => {}} />
+            <TbButton icon="indent-dec" title="减少缩进（即将支持）" disabled onClick={() => {}} />
+          </div>
+          <div className="tb-pair-row">
+            <TbPop icon="merge" text="合并单元格" title="合并单元格" width={176} disabled={locked}>
+              {(close) => (
+                <>
                   <MenuItem
-                    key={val}
-                    label={lab}
-                    icon={ico as IconName}
-                    active={(curStyle?.align ?? 'left') === val}
+                    label="合并单元格"
+                    icon="merge"
+                    disabled={range.r1 === range.r2 && range.c1 === range.c2}
                     onClick={() => {
-                      applyStyle({ align: val })
+                      sheet.mergeCells(range.r1, range.c1, range.r2, range.c2)
                       close()
                     }}
                   />
-                ))}
-              </>
-            )}
-          </TbPop>
-        ))}
-        <TbButton
-          icon="align-distributed"
-          title="分散对齐（即将支持）"
-          disabled
-          onClick={() => {}}
-        />
+                  <MenuItem
+                    label="合并后居中"
+                    icon="align-center"
+                    disabled={range.r1 === range.r2 && range.c1 === range.c2}
+                    onClick={() => {
+                      sheet.mergeCells(range.r1, range.c1, range.r2, range.c2)
+                      sheet.applyStyleRange(range.r1, range.c1, range.r2, range.c2, { align: 'center' })
+                      close()
+                    }}
+                  />
+                  <MenuItem
+                    label="取消合并"
+                    disabled={!mergedAtSel}
+                    onClick={() => {
+                      sheet.unmergeCells(range.r1, range.c1, range.r2, range.c2)
+                      close()
+                    }}
+                  />
+                </>
+              )}
+            </TbPop>
+          </div>
+        </div>
 
         <span className="tb-div" />
 
-        {/* 数字格式（显示当前格式名） */}
-        <TbPop text={curFmtLabel} width={186} disabled={locked} title="数字格式" className="tb-numfmt">
-          {(close) => (
-            <>
-              {NUM_FMTS.map((f) => (
-                <MenuItem
-                  key={f.label}
-                  label={f.label}
-                  hint={f.code || undefined}
-                  active={(curStyle?.numfmt ?? '') === f.code}
-                  onClick={() => {
-                    sheet.setNumFmt(range.r1, range.c1, range.r2, range.c2, f.code)
-                    close()
-                  }}
-                />
-              ))}
-              <MenuSep />
-              <MenuItem
-                label="自定义格式…"
-                onClick={() => {
-                  close()
-                  const code = window.prompt(
-                    '输入数字格式代码（如 0.00、#,##0.00、yyyy-mm-dd）',
-                    curStyle?.numfmt || '0.00'
-                  )
-                  if (code === null) return
-                  sheet.setNumFmt(range.r1, range.c1, range.r2, range.c2, code.trim())
-                  onNotify(code.trim() ? '已应用自定义格式：' + code.trim() : '已恢复常规格式')
-                }}
-              />
-            </>
-          )}
-        </TbPop>
+        {/* —— 上行：数字格式｜下行：货币 百分比 小数位 —— */}
+        <div className="tb-pair">
+          <div className="tb-pair-row">
+            <TbPop text={curFmtLabel} width={186} disabled={locked} title="数字格式">
+              {(close) => (
+                <>
+                  {NUM_FMTS.map((f) => (
+                    <MenuItem
+                      key={f.label}
+                      label={f.label}
+                      hint={f.code || undefined}
+                      active={(curStyle?.numfmt ?? '') === f.code}
+                      onClick={() => {
+                        sheet.setNumFmt(range.r1, range.c1, range.r2, range.c2, f.code)
+                        close()
+                      }}
+                    />
+                  ))}
+                  <MenuSep />
+                  <MenuItem
+                    label="自定义格式…"
+                    onClick={() => {
+                      close()
+                      const code = window.prompt(
+                        '输入数字格式代码（如 0.00、#,##0.00、yyyy-mm-dd）',
+                        curStyle?.numfmt || '0.00'
+                      )
+                      if (code === null) return
+                      sheet.setNumFmt(range.r1, range.c1, range.r2, range.c2, code.trim())
+                      onNotify(code.trim() ? '已应用自定义格式：' + code.trim() : '已恢复常规格式')
+                    }}
+                  />
+                </>
+              )}
+            </TbPop>
+          </div>
+          <div className="tb-pair-row">
+            <TbPop
+              iconNode={<span className="tb-num-ico">¥</span>}
+              title="货币格式"
+              width={210}
+              disabled={locked}
+            >
+              {(close) => (
+                <>
+                  {CURRENCY_FMTS.map((f) => (
+                    <MenuItem
+                      key={f.code}
+                      label={f.label}
+                      active={curStyle?.numfmt === f.code}
+                      onClick={() => {
+                        setNumFmt(f.code, f.label)
+                        close()
+                      }}
+                    />
+                  ))}
+                  <MenuSep />
+                  <MenuItem
+                    label="清除货币格式"
+                    onClick={() => {
+                      setNumFmt('', '')
+                      close()
+                    }}
+                  />
+                </>
+              )}
+            </TbPop>
+            <TbPop
+              iconNode={<span className="tb-num-ico">%</span>}
+              title="百分比格式"
+              width={190}
+              disabled={locked}
+            >
+              {(close) => (
+                <>
+                  {PERCENT_FMTS.map((f) => (
+                    <MenuItem
+                      key={f.code}
+                      label={f.label}
+                      active={curStyle?.numfmt === f.code}
+                      onClick={() => {
+                        setNumFmt(f.code, f.label)
+                        close()
+                      }}
+                    />
+                  ))}
+                  <MenuSep />
+                  <MenuItem
+                    label="清除百分比格式"
+                    onClick={() => {
+                      setNumFmt('', '')
+                      close()
+                    }}
+                  />
+                </>
+              )}
+            </TbPop>
+            <TbButton
+              iconNode={<span className="tb-num-ico">.00</span>}
+              title="增加小数位"
+              disabled={locked}
+              onClick={() => bumpDecimal(1)}
+            />
+            <TbButton
+              iconNode={<span className="tb-num-ico">.0</span>}
+              title="减少小数位"
+              disabled={locked}
+              onClick={() => bumpDecimal(-1)}
+            />
+          </div>
+        </div>
 
-        <span className="tb-div" />
-
-        {/* 合并单元格 */}
-        <TbPop stacked icon="merge" text="合并单元格" title="合并单元格" width={176} disabled={locked}>
-          {(close) => (
-            <>
-              <MenuItem
-                label="合并单元格"
-                icon="merge"
-                disabled={range.r1 === range.r2 && range.c1 === range.c2}
-                onClick={() => {
-                  sheet.mergeCells(range.r1, range.c1, range.r2, range.c2)
-                  close()
-                }}
-              />
-              <MenuItem
-                label="合并后居中"
-                icon="align-center"
-                disabled={range.r1 === range.r2 && range.c1 === range.c2}
-                onClick={() => {
-                  sheet.mergeCells(range.r1, range.c1, range.r2, range.c2)
-                  sheet.applyStyleRange(range.r1, range.c1, range.r2, range.c2, { align: 'center' })
-                  close()
-                }}
-              />
-              <MenuItem
-                label="取消合并"
-                disabled={!mergedAtSel}
-                onClick={() => {
-                  sheet.unmergeCells(range.r1, range.c1, range.r2, range.c2)
-                  close()
-                }}
-              />
-            </>
-          )}
-        </TbPop>
-
-        <span className="tb-div" />
-
-        {/* 货币 / 百分比 / 小数位 / 千分位 */}
-        <TbPop
-          iconNode={<span className="tb-num-ico">¥</span>}
-          title="货币格式"
-          width={210}
-          disabled={locked}
-        >
-          {(close) => (
-            <>
-              {CURRENCY_FMTS.map((f) => (
-                <MenuItem
-                  key={f.code}
-                  label={f.label}
-                  active={curStyle?.numfmt === f.code}
-                  onClick={() => {
-                    setNumFmt(f.code, f.label)
-                    close()
-                  }}
-                />
-              ))}
-              <MenuSep />
-              <MenuItem
-                label="清除货币格式"
-                onClick={() => {
-                  setNumFmt('', '')
-                  close()
-                }}
-              />
-            </>
-          )}
-        </TbPop>
-        <TbPop
-          iconNode={<span className="tb-num-ico">%</span>}
-          title="百分比格式"
-          width={190}
-          disabled={locked}
-        >
-          {(close) => (
-            <>
-              {PERCENT_FMTS.map((f) => (
-                <MenuItem
-                  key={f.code}
-                  label={f.label}
-                  active={curStyle?.numfmt === f.code}
-                  onClick={() => {
-                    setNumFmt(f.code, f.label)
-                    close()
-                  }}
-                />
-              ))}
-              <MenuSep />
-              <MenuItem
-                label="清除百分比格式"
-                onClick={() => {
-                  setNumFmt('', '')
-                  close()
-                }}
-              />
-            </>
-          )}
-        </TbPop>
-        <TbPop
-          iconNode={<span className="tb-num-ico">.00</span>}
-          title="小数位数"
-          width={190}
-          disabled={locked}
-        >
-          {(close) => (
-            <>
-              {DECIMAL_FMTS.map((f) => (
-                <MenuItem
-                  key={f.code}
-                  label={f.label}
-                  hint={f.code}
-                  active={curStyle?.numfmt === f.code}
-                  onClick={() => {
-                    setNumFmt(f.code, f.label)
-                    close()
-                  }}
-                />
-              ))}
-            </>
-          )}
-        </TbPop>
-        <TbPop
-          iconNode={<span className="tb-num-ico">,000</span>}
-          title="千位分隔符"
-          width={220}
-          disabled={locked}
-        >
-          {(close) => (
-            <>
-              {THOUSAND_FMTS.map((f) => (
-                <MenuItem
-                  key={f.code}
-                  label={f.label}
-                  active={curStyle?.numfmt === f.code}
-                  onClick={() => {
-                    setNumFmt(f.code, f.label)
-                    close()
-                  }}
-                />
-              ))}
-              <MenuSep />
-              <MenuItem
-                label="清除千位分隔"
-                onClick={() => {
-                  setNumFmt('', '')
-                  close()
-                }}
-              />
-            </>
-          )}
-        </TbPop>
-
-        <span className="tb-div" />
-
-        {/* 冻结 / 筛选 / 排序 */}
+        {/* —— 冻结 —— */}
         <TbPop stacked icon="freeze" text="冻结" title="冻结窗格" width={200} disabled={locked}>
           {(close) => (
             <>
@@ -1361,7 +1321,13 @@ export default function SheetToolbar(props: SheetToolbarProps) {
             </>
           )}
         </TbPop>
-        <TbButton stacked icon="filter" text="筛选" title="筛选（即将支持）" disabled onClick={() => {}} />
+
+        <span className="tb-div" />
+
+        {/* —— 筛选 / 排序 / 条件格式 / 下拉列表 / 公式 / 多维表格 —— */}
+        <TbPop stacked icon="filter" text="筛选" title="筛选（即将支持）" disabled>
+          {null}
+        </TbPop>
         <TbPop stacked icon="sort" text="排序" title="排序（按当前列）" width={180} disabled={locked}>
           {(close) => (
             <>
@@ -1384,12 +1350,12 @@ export default function SheetToolbar(props: SheetToolbarProps) {
             </>
           )}
         </TbPop>
-
-        <span className="tb-div" />
-
-        {/* 条件格式 / 下拉列表 / 公式 / 多维表格 */}
-        <TbButton stacked icon="cond-format" text="条件格式" title="条件格式（即将支持）" disabled onClick={() => {}} />
-        <TbButton stacked icon="dropdown-list" text="下拉列表" title="下拉列表（即将支持）" disabled onClick={() => {}} />
+        <TbPop stacked icon="cond-format" text="条件格式" title="条件格式（即将支持）" disabled>
+          {null}
+        </TbPop>
+        <TbPop stacked icon="dropdown-list" text="下拉列表" title="下拉列表（即将支持）" disabled>
+          {null}
+        </TbPop>
         <TbPop stacked icon="sum" text="公式" title="插入函数" width={200} disabled={locked}>
           {(close) => (
             <>
@@ -1401,11 +1367,13 @@ export default function SheetToolbar(props: SheetToolbarProps) {
             </>
           )}
         </TbPop>
-        <TbButton stacked icon="table" text="多维表格" title="多维表格（即将支持）" disabled onClick={() => {}} />
+        <TbPop stacked icon="table" text="多维表格" title="多维表格（即将支持）" disabled>
+          {null}
+        </TbPop>
 
         <span className="tb-div" />
 
-        {/* 查找和替换 / 评论 */}
+        {/* —— 查找和替换 —— */}
         <TbButton
           stacked
           icon="find"
@@ -1414,6 +1382,10 @@ export default function SheetToolbar(props: SheetToolbarProps) {
           onClick={onFind}
           disabled={locked}
         />
+
+        <span className="tb-div" />
+
+        {/* —— 评论 —— */}
         <TbButton
           stacked
           icon="comment"

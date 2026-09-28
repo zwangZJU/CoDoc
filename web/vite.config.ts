@@ -11,7 +11,9 @@ export default defineConfig({
     port: 5173,
     // 允许从项目外引入 design-system/tokens.css
     fs: { allow: [__dirname, path.resolve(__dirname, '../design-system')] },
-    // 开发期把前端请求代理到后端（1234），避免跨域
+    // 开发期把前端请求代理到本地后端，避免跨域
+    // 后端默认 PORT=1234（见 server/package.json 的 dev/start）；
+    // 注意 1240/1241 被 nps 隧道占用且上游已失效，不要指向这两个端口。
     proxy: {
       '/api': { target: 'http://localhost:1234', changeOrigin: true },
       '/collab': {

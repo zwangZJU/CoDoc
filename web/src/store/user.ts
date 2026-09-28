@@ -1,6 +1,12 @@
 /**
- * 本地用户身份 + 协同 6 色表（与 tokens.css 第 4 节协同色一致）
+ * 登录身份 + 协同 6 色表（与 tokens.css 第 4 节协同色一致）
  * 主色用于描边/竖条/光标；ink 用于姓名文字（琥珀/亮蓝对比度不足须用 ink）
+ *
+ * 重要：这里不再生成任何本地凭证。
+ * 早期版本在本机随机生成一个 token 存在 localStorage 当身份，于是换浏览器、
+ * 换访问入口（localhost / 127.0.0.1 / 局域网 IP）就变成另一个人，自己创建的
+ * 文档反而提示「你已无法访问」。现在身份由登录会话下发（后端 HttpOnly Cookie），
+ * 前端只保存「我是谁」的展示信息，归属一律以后端的 userId 为准。
  */
 export const COLLAB = [
   { c: '#185FA5', ink: '#185FA5', label: '深蓝' },
@@ -12,89 +18,64 @@ export const COLLAB = [
 ] as const
 
 export interface LocalUser {
+  /** 后端账号 userId：权限归属锚点 */
   id: string
   name: string
   colorIndex: number
-  /** true = 通过分享链接进入的访客（没有账号系统），UI 上打「访客」角标 */
+  email?: string
+  avatar?: string
+  /** 登录来源：dev / casdoor / feishu ... */
+  provider?: string
+  /** 保留字段：现已不再有"匿名访客"，协同名单统一按账号显示 */
   guest?: boolean
 }
 
-const KEY = 'codoc-user'
-/** 访客身份单独存：本机所有者的名字叫「我」，不能和链接进来的访客混用 */
-const GUEST_KEY = 'codoc-guest'
+/** 当前登录用户（登录后由 App 注入；未登录为 null） */
+let current: LocalUser | null = null
 
-const randId = () => Math.random().toString(36).slice(2, 10)
-const randColor = () => Math.floor(Math.random() * COLLAB.length)
-
-/** 本机用户（工作台所有者视角） */
-export function getLocalUser(): LocalUser {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (raw) {
-      const u = JSON.parse(raw) as LocalUser
-      if (u && u.id && u.name) return { ...u, guest: false }
-    }
-  } catch {
-    /* ignore */
-  }
-  const user: LocalUser = { id: randId(), name: '我', colorIndex: randColor(), guest: false }
-  localStorage.setItem(KEY, JSON.stringify(user))
-  return user
+/** 颜色按 userId 稳定哈希：同一个人每次进来都是同一个颜色 */
+function colorIndexFor(id: string): number {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 100000
+  return ((h % COLLAB.length) + COLLAB.length) % COLLAB.length
 }
 
-/** 已记住的访客身份；返回 null 表示这个人从没在本机登记过，需要弹姓名卡片 */
-export function getGuestUser(): LocalUser | null {
-  try {
-    const raw = localStorage.getItem(GUEST_KEY)
-    if (!raw) return null
-    const u = JSON.parse(raw) as LocalUser
-    if (!u?.id || !u?.name) return null
-    return { ...u, guest: true }
-  } catch {
-    return null
+export function setSession(u: {
+  id: string
+  name: string
+  email?: string
+  avatar?: string
+  provider?: string
+}): LocalUser {
+  current = {
+    id: u.id,
+    name: u.name,
+    colorIndex: colorIndexFor(u.id),
+    ...(u.email ? { email: u.email } : {}),
+    ...(u.avatar ? { avatar: u.avatar } : {}),
+    provider: u.provider || 'dev',
+    guest: false,
   }
+  return current
 }
 
-/** 登记访客身份。remember=false 时只放 sessionStorage（关掉标签页就重新问） */
-export function saveGuestUser(name: string, colorIndex: number, remember = true): LocalUser {
-  const user: LocalUser = { id: randId(), name, colorIndex, guest: true }
-  const raw = JSON.stringify(user)
-  try {
-    const store = remember ? localStorage : sessionStorage
-    store.setItem(GUEST_KEY, raw)
-  } catch {
-    /* 隐私模式下写不了就算了，本次会话仍可用 */
-  }
-  return user
+export function getSession(): LocalUser | null {
+  return current
 }
 
-export function clearGuestUser() {
-  try {
-    localStorage.removeItem(GUEST_KEY)
-    sessionStorage.removeItem(GUEST_KEY)
-  } catch {
-    /* ignore */
-  }
+export function clearSession(): void {
+  current = null
 }
 
-/** 改名 / 换色：按身份来源写回对应存储，id 保持不变 */
-export function applyIdentity(
-  prev: LocalUser,
-  patch: { name?: string; colorIndex?: number }
-): LocalUser {
-  const next: LocalUser = {
-    ...prev,
+/** 改名/换色：只改本地展示（刷新后回到账号名），不改变权限归属 */
+export function patchSession(patch: { name?: string; colorIndex?: number }): LocalUser | null {
+  if (!current) return null
+  current = {
+    ...current,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.colorIndex !== undefined ? { colorIndex: patch.colorIndex } : {}),
   }
-  try {
-    const key = prev.guest ? GUEST_KEY : KEY
-    const store = prev.guest && !localStorage.getItem(GUEST_KEY) ? sessionStorage : localStorage
-    store.setItem(key, JSON.stringify(next))
-  } catch {
-    /* ignore */
-  }
-  return next
+  return current
 }
 
 /** 姓名合法性：1~12 个字符，去空白后非空 */

@@ -94,6 +94,71 @@ function makeEmptySheet(): Y.Array<Y.Array<CellData>> {
   return arr
 }
 
+// ---------------------------------------------------------------- TSV 编解码
+
+/**
+ * 单元格文本 -> TSV 字段。
+ * 含换行 / 制表符 / 引号时按 Excel 的规矩用双引号包起来，
+ * 这样「一个带回车的单元格」复制出去再粘回来，仍然落在同一个格子里。
+ */
+export function tsvCell(v: string): string {
+  return /["\t\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v
+}
+
+/**
+ * 解析 TSV（Excel / 飞书 / 本表格复制出来的格式），支持双引号包裹的字段。
+ * 引号里的换行属于单元格内容，不会被当成「换一行」。
+ */
+export function parseTsv(text: string): string[][] {
+  const s = text.replace(/\r\n?/g, '\n')
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  let started = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') {
+          field += '"'
+          i++
+        } else inQuotes = false
+      } else field += ch
+      continue
+    }
+    // 只有出现在「字段开头」的引号才是包裹符，字段中间的引号按普通字符处理
+    if (ch === '"' && !started) {
+      inQuotes = true
+      started = true
+      continue
+    }
+    if (ch === '\t') {
+      row.push(field)
+      field = ''
+      started = false
+      continue
+    }
+    if (ch === '\n') {
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+      started = false
+      continue
+    }
+    field += ch
+    started = true
+  }
+  row.push(field)
+  rows.push(row)
+  // 复制时末尾常带一个换行，收掉它，避免多粘出一个空行
+  while (rows.length > 1 && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') {
+    rows.pop()
+  }
+  return rows
+}
+
 export interface SheetApi {
   rows: CellData[][]
   rowCount: number
@@ -343,6 +408,29 @@ export function useSheet(ydoc: Y.Doc, activeSheet: string): SheetApi {
   // ---- 底层写入（不自带事务） ----
   const readCell = (r: number, c: number): CellData => rows[r]?.[c] ?? { v: '' }
 
+  /**
+   * 把整张表补到至少 needRows 行 × needCols 列（**所有行一起补**）。
+   * 只补某一行会留下参差行，表格渲染时列宽错位、合并区也会跟着乱。
+   */
+  const ensureSize = (needRows: number, needCols: number) => {
+    if (!sheet) return
+    const cols = Math.max(needCols, sheet.length ? sheet.get(0)?.length ?? 0 : 0)
+    for (let r = 0; r < sheet.length; r++) {
+      const rowA = sheet.get(r)
+      if (!rowA || rowA.length >= cols) continue
+      const add: CellData[] = []
+      for (let c = rowA.length; c < cols; c++) add.push(emptyCell())
+      rowA.push(add)
+    }
+    for (let r = sheet.length; r < needRows; r++) {
+      const rowA = new Y.Array<CellData>()
+      const cells: CellData[] = []
+      for (let c = 0; c < cols; c++) cells.push(emptyCell())
+      rowA.insert(0, cells)
+      sheet.push([rowA])
+    }
+  }
+
   const writeCell = (
     s: Y.Array<Y.Array<CellData>>,
     r: number,
@@ -409,6 +497,7 @@ export function useSheet(ydoc: Y.Doc, activeSheet: string): SheetApi {
   const setCellValue = (r: number, c: number, v: string) => {
     if (!sheet) return
     ydoc.transact(() => {
+      ensureSize(r + 1, c + 1)
       const cur = readCell(r, c)
       writeCell(sheet, r, c, { v, s: cur.s })
     }, LOCAL)
@@ -823,7 +912,7 @@ export function useSheet(ydoc: Y.Doc, activeSheet: string): SheetApi {
       for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
         const raw = readCell(r, c).v
         // 复制到外部剪贴板时给「公式的求值结果」，与 Excel / 飞书一致
-        line.push(raw.startsWith('=') ? evalFormula(raw, getCellRaw) : raw)
+        line.push(tsvCell(raw.startsWith('=') ? evalFormula(raw, getCellRaw) : raw))
       }
       out.push(line.join('\t'))
     }
@@ -831,11 +920,11 @@ export function useSheet(ydoc: Y.Doc, activeSheet: string): SheetApi {
   }
   const pasteTsv = (r0: number, c0: number, text: string) => {
     if (!sheet) return { rows: 0, cols: 0 }
-    const lines = text.replace(/\r\n?/g, '\n').split('\n')
-    while (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-    const grid = lines.map((l) => l.split('\t'))
+    const grid = parseTsv(text)
     const colN = grid.reduce((n, l) => Math.max(n, l.length), 0)
     ydoc.transact(() => {
+      // 粘贴区可能超出当前表：先把整张表补齐，避免越界写入 / 出现参差行
+      ensureSize(r0 + grid.length, c0 + colN)
       grid.forEach((cells, i) => {
         cells.forEach((v, j) => {
           const cur = readCell(r0 + i, c0 + j)

@@ -1,16 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Workspace from './pages/Workspace'
 import Editor from './pages/Editor'
 import WordEditor from './pages/WordEditor'
-import { GuestGate, type GuestJoinInfo } from './components/GuestGate'
+import { Login } from './pages/Login'
+import { AccessWaiting, GuestGate } from './components/GuestGate'
 import TeamAdmin from './pages/TeamAdmin'
-import { api } from './store/api'
-import { getGuestUser, saveGuestUser, type LocalUser } from './store/user'
+import { api, type DocMeta } from './store/api'
+import { clearSession, setSession, type LocalUser } from './store/user'
 import type { ImportPayload } from './store/importPayload'
 
 type Route =
   | { page: 'workspace' }
-  | { page: 'loading'; docId: string; shared: boolean }
+  | { page: 'loading'; docId: string }
+  /** 未登录：先登录再决定能看什么 */
+  | { page: 'login'; docId?: string; docName?: string }
+  /** 无权限：以当前账号提交访问申请 */
+  | {
+      page: 'gate'
+      docId: string
+      name: string
+      kind: 'sheet' | 'doc'
+      ownerName: string
+      needApproval: boolean
+    }
+  /** 已提交申请，轮询等待批准 */
+  | {
+      page: 'waiting'
+      docId: string
+      name: string
+      kind: 'sheet' | 'doc'
+      ownerName: string
+      rejected: boolean
+    }
   | { page: 'editor'; docId: string; name: string; shared: boolean }
   | { page: 'word'; docId: string; name: string; shared: boolean }
   | { page: 'notfound'; docId: string }
@@ -23,98 +44,235 @@ function readDocParam(): string | null {
 export default function App() {
   const [route, setRoute] = useState<Route>(() => {
     const id = readDocParam()
-    return id ? { page: 'loading', docId: id, shared: true } : { page: 'workspace' }
+    return id ? { page: 'loading', docId: id } : { page: 'workspace' }
   })
   /** 新建并导入时，先把解析好的内容交给编辑器，由它在同步完成后写入 Yjs */
   const [pendingImport, setPendingImport] = useState<ImportPayload | null>(null)
-  /** 已登记的访客身份（来自分享链接）；为空表示尚未登记，需要弹卡片。
-   *  初始值直接同步读本机记忆——刷新页面后第一帧就恢复身份，
-   *  不再闪一帧「请登记姓名」，也不会在恢复前看起来像换了个人。 */
-  const [guest, setGuest] = useState<LocalUser | null>(() => getGuestUser())
+  /** 当前登录账号；身份由后端会话下发，前端不保存任何凭证 */
+  const [me, setMe] = useState<LocalUser | null>(null)
+  /** 登录态是否已确认：确认前不渲染业务页面，避免闪一下工作台又跳登录 */
+  const [booted, setBooted] = useState(false)
   /** 当前查看的团队空间（非空表示进入某团队的团队空间视图） */
   const [teamView, setTeamView] = useState<{ id: string; name: string } | null>(null)
   /** 是否打开团队管理（管理员页面） */
   const [adminView, setAdminView] = useState(false)
 
-  // 通过 ?doc= 进入时，先拉文档元数据还原标题与类型
+  const refreshMe = useCallback(async () => {
+    try {
+      const r = await api.me()
+      setMe(setSession(r.user))
+      return true
+    } catch {
+      setMe(null)
+      clearSession()
+      return false
+    }
+  }, [])
+
   useEffect(() => {
-    if (route.page !== 'loading') return
     let alive = true
-    api
-      .getDoc(route.docId)
-      .then((d) => {
-        if (!alive) return
-        setRoute(d.kind === 'doc' ? { page: 'word', docId: d.id, name: d.name, shared: true } : { page: 'editor', docId: d.id, name: d.name, shared: true })
-      })
-      .catch((e) => {
-        if (!alive) return
-        setRoute({ page: 'notfound', docId: route.docId })
-        console.warn('[CoDoc] 打开分享链接失败：', e?.message || e)
-      })
+    refreshMe().finally(() => {
+      if (alive) setBooted(true)
+    })
     return () => {
       alive = false
     }
-  }, [route])
+  }, [refreshMe])
 
-  // 链接进入但本机已记住访客身份，直接套用，无需再弹卡片
+  /**
+   * 通过 ?doc= 进入时的分流。
+   * 顺序很重要：先看登录没登录，再问"我有没有权限"，
+   * 最后决定是直达编辑器、提交申请、还是等待批准。
+   * 没有权限的人看到的是申请页，不是白屏或报错。
+   */
   useEffect(() => {
-    if ((route.page === 'editor' || route.page === 'word') && !guest) {
-      const g = getGuestUser()
-      if (g) setGuest(g)
+    if (!booted) return
+    if (route.page !== 'loading') return
+    let alive = true
+    const id = route.docId
+    const enter = (d: DocMeta) =>
+      setRoute(
+        d.kind === 'doc'
+          ? { page: 'word', docId: d.id, name: d.name, shared: true }
+          : { page: 'editor', docId: d.id, name: d.name, shared: true }
+      )
+    ;(async () => {
+      try {
+        const d = await api.getDoc(id)
+        if (!alive) return
+        // 未登录：先去登录，登录后回到这里继续分流
+        if (!me) {
+          setRoute({ page: 'login', docId: id, docName: d.name })
+          return
+        }
+        const access = await api.getMyAccess(id)
+        if (!alive) return
+        if (access.level && access.level !== 'none') {
+          enter({ ...d, kind: access.kind, name: access.name })
+          return
+        }
+        if (access.status === 'pending') {
+          setRoute({
+            page: 'waiting',
+            docId: id,
+            name: access.name,
+            kind: access.kind,
+            ownerName: access.ownerName,
+            rejected: false,
+          })
+          return
+        }
+        setRoute({
+          page: 'gate',
+          docId: id,
+          name: access.name,
+          kind: access.kind,
+          ownerName: access.ownerName,
+          // 仅协作者可访问 → 必须申请；开放链接 → 登记后直接进
+          needApproval: !access.linkOpen || access.status === 'rejected',
+        })
+      } catch (e) {
+        if (!alive) return
+        setRoute({ page: 'notfound', docId: id })
+        console.warn('[CoDoc] 打开分享链接失败：', e instanceof Error ? e.message : e)
+      }
+    })()
+    return () => {
+      alive = false
     }
-  }, [route, guest])
+  }, [route, booted, me])
 
-  const open = (docId: string, name: string, kind: 'sheet' | 'doc', payload?: ImportPayload) => {
+  /** 新建 / 打开文档（工作台入口） */
+  const open = (docId: string, name: string, kind: 'sheet' | 'doc', payload?: ImportPayload | null) => {
     setPendingImport(payload || null)
     history.replaceState(null, '', '?doc=' + encodeURIComponent(docId))
-    setRoute(kind === 'doc' ? { page: 'word', docId, name, shared: false } : { page: 'editor', docId, name, shared: false })
+    setRoute(
+      kind === 'doc'
+        ? { page: 'word', docId, name, shared: false }
+        : { page: 'editor', docId, name, shared: false }
+    )
   }
 
   /** 编辑器内改名后，同步 App 路由里的标题（返回工作台 / 再次分享时用新名） */
   const applyDocRename = (next: string) => {
-    setRoute((r) =>
-      r.page === 'editor' || r.page === 'word'
-        ? { ...r, name: next }
-        : r
-    )
+    setRoute((r) => (r.page === 'editor' || r.page === 'word' ? { ...r, name: next } : r))
   }
 
-  const back = () => {
+  const back = useCallback(() => {
     setPendingImport(null)
-    setGuest(null)
     setTeamView(null)
     setAdminView(false)
     history.replaceState(null, '', location.pathname)
     setRoute({ page: 'workspace' })
+  }, [])
+
+  const logout = useCallback(async () => {
+    await api.logout().catch(() => undefined)
+    clearSession()
+    setMe(null)
+    history.replaceState(null, '', location.pathname)
+    setRoute({ page: 'workspace' })
+  }, [])
+
+  /** 已登记并获授权 → 直接进入文档 */
+  const onGranted = () => {
+    setRoute((r) => {
+      if (r.page !== 'gate' && r.page !== 'waiting') return r
+      return r.kind === 'doc'
+        ? { page: 'word', docId: r.docId, name: r.name, shared: true }
+        : { page: 'editor', docId: r.docId, name: r.name, shared: true }
+    })
   }
 
-  /** 访客卡片提交：登记身份（可选注册为成员）后放行进入 */
-  const onJoin = (info: GuestJoinInfo) => {
-    const u = saveGuestUser(info.name, info.colorIndex, info.remember)
-    setGuest(u)
-    if (info.register && (route.page === 'editor' || route.page === 'word')) {
-      api.invite(route.docId, info.name, 'edit').catch(() => {
-        /* 注册失败不阻断进入，仅在线名单可见 */
-      })
-    }
+  /** 已提交申请，转入等待批准页 */
+  const onPending = () => {
+    setRoute((r) =>
+      r.page === 'gate'
+        ? {
+            page: 'waiting',
+            docId: r.docId,
+            name: r.name,
+            kind: r.kind,
+            ownerName: r.ownerName,
+            rejected: false,
+          }
+        : r
+    )
   }
 
-  // 拉取文档元数据期间：loading 占位（此时 route.name 还未就绪，不能弹姓名卡片）
+  /** 登录成功：确认身份后，从分享链接进来的人继续走分流 */
+  const onLoggedIn = async () => {
+    const ok = await refreshMe()
+    if (!ok) return
+    setRoute((r) =>
+      r.page === 'login' && r.docId
+        ? { page: 'loading', docId: r.docId }
+        : { page: 'workspace' }
+    )
+  }
+
+  // 登录态未确认：loading 占位
+  if (!booted) {
+    return (
+      <div className="guest-mask">
+        <div className="guest-card">
+          <div className="guest-badge">CoDoc 同写</div>
+          <h2 className="guest-title">正在确认登录状态…</h2>
+          <p className="guest-sub">请稍候。</p>
+        </div>
+      </div>
+    )
+  }
+
+  // 未登录：登录页（从分享链接进来时带上文档名，告诉用户要去哪）
+  if (!me) {
+    return (
+      <Login
+        docName={route.page === 'login' ? route.docName : undefined}
+        onLoggedIn={onLoggedIn}
+      />
+    )
+  }
+
+  // 拉取文档元数据期间：loading 占位
   if (route.page === 'loading') {
     return (
       <div className="guest-mask">
         <div className="guest-card">
           <div className="guest-badge">正在打开</div>
           <h2 className="guest-title">正在连接文档…</h2>
-          <p className="guest-sub">正在加载《{route.docId}》的标题与协作房间，请稍候。</p>
+          <p className="guest-sub">正在确认你的访问权限，请稍候。</p>
         </div>
       </div>
     )
   }
 
-  // 通过分享链接进入、且未登记访客身份 → 弹姓名卡片（不可跳过）
-  if ((route.page === 'editor' || route.page === 'word') && route.shared && !guest) {
-    return <GuestGate docName={route.name} docId={route.docId} onJoin={onJoin} />
+  if (route.page === 'gate') {
+    return (
+      <GuestGate
+        docName={route.name}
+        docId={route.docId}
+        ownerName={route.ownerName}
+        needApproval={route.needApproval}
+        me={me}
+        onGranted={onGranted}
+        onPending={onPending}
+        onBack={back}
+      />
+    )
+  }
+
+  if (route.page === 'waiting') {
+    return (
+      <AccessWaiting
+        docName={route.name}
+        docId={route.docId}
+        ownerName={route.ownerName}
+        rejected={route.rejected}
+        onGranted={onGranted}
+        onBack={back}
+      />
+    )
   }
 
   // 编辑器 / 文档编辑器（最高业务优先级：正在协同编辑）
@@ -123,7 +281,7 @@ export default function App() {
       <WordEditor
         docId={route.docId}
         name={route.name}
-        identity={guest}
+        identity={me}
         importPayload={pendingImport}
         onImported={() => setPendingImport(null)}
         onBack={back}
@@ -136,7 +294,7 @@ export default function App() {
       <Editor
         docId={route.docId}
         name={route.name}
-        identity={guest}
+        identity={me}
         importPayload={pendingImport}
         onImported={() => setPendingImport(null)}
         onBack={back}
@@ -180,6 +338,7 @@ export default function App() {
       <Workspace
         teamId={teamView.id}
         teamName={teamView.name}
+        me={me}
         onExitTeam={() => setTeamView(null)}
         onManageTeam={() => {
           setTeamView(null)
@@ -187,9 +346,10 @@ export default function App() {
         }}
         onOpenTeam={(t) => setTeamView(t)}
         onOpen={open}
+        onLogout={logout}
       />
     )
   }
 
-  return <Workspace onOpenTeam={(t) => setTeamView(t)} onOpen={open} />
+  return <Workspace me={me} onOpenTeam={(t) => setTeamView(t)} onOpen={open} onLogout={logout} />
 }

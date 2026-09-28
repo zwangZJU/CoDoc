@@ -3,13 +3,29 @@
 
 import { createZip, readZip, type ZipFile } from './zip'
 
-export type BlockType = 'p' | 'h1' | 'h2' | 'h3' | 'li'
+export type BlockType =
+  | 'p'
+  | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'h7' | 'h8' | 'h9'
+  | 'ol' | 'li' | 'task'
+  | 'code' | 'quote' | 'callout' | 'sync'
 
 export interface Run {
   text: string
   b?: boolean
   i?: boolean
   u?: boolean
+  /** 删除线 */
+  s?: boolean
+  /** 行内代码 */
+  code?: boolean
+  /** 文字颜色（#RRGGBB） */
+  color?: string
+  /** 高亮色（#RRGGBB） */
+  hl?: string
+  /** 字体族（取首个） */
+  font?: string
+  /** 链接地址 */
+  link?: string
 }
 
 export interface Block {
@@ -106,7 +122,11 @@ export function docxToBlocks(buf: Uint8Array): Block[] {
       if (styleVal.startsWith('Heading1') || styleVal === 'Heading1') type = 'h1'
       else if (styleVal.startsWith('Heading2')) type = 'h2'
       else if (styleVal.startsWith('Heading3')) type = 'h3'
+      else if (/^Heading([4-9])/.test(styleVal)) {
+        type = ('h' + styleVal.match(/^Heading([4-9])/)![1]) as BlockType
+      }
       else if (styleVal === 'ListParagraph' || styleVal.startsWith('List')) type = 'li'
+      else if (styleVal === 'Quote' || styleVal === 'IntenseQuote') type = 'quote'
       const jc = find(pPr, 'w:jc')
       const jv = jc?.attrs['w:val']
       if (jv === 'center') align = 'center'
@@ -120,10 +140,28 @@ export function docxToBlocks(buf: Uint8Array): Block[] {
       const text = t ? t.text : ''
       if (!text) continue
       const rPr = find(r, 'w:rPr')
-      const b = !!find(rPr || { tag: '', attrs: {}, children: [], text: '' }, 'w:b')
-      const i = !!find(rPr || { tag: '', attrs: {}, children: [], text: '' }, 'w:i')
-      const u = !!find(rPr || { tag: '', attrs: {}, children: [], text: '' }, 'w:u')
-      runs.push({ text, b: b || undefined, i: i || undefined, u: u || undefined })
+      const empty = { tag: '', attrs: {}, children: [], text: '' }
+      const b = !!find(rPr || empty, 'w:b')
+      const i = !!find(rPr || empty, 'w:i')
+      const u = !!find(rPr || empty, 'w:u')
+      const s = !!find(rPr || empty, 'w:strike')
+      const colorNode = find(rPr || empty, 'w:color')
+      const hlNode = find(rPr || empty, 'w:highlight')
+      const fontNode = find(rPr || empty, 'w:rFonts')
+      const run: Run = {
+        text,
+        b: b || undefined,
+        i: i || undefined,
+        u: u || undefined,
+        s: s || undefined,
+      }
+      const cv = colorNode?.attrs['w:val']
+      if (cv && cv !== 'auto') run.color = '#' + cv.replace('#', '')
+      const hv = hlNode?.attrs['w:val']
+      if (hv && hv !== 'none') run.hl = HL_DOCX_TO_CSS[hv] || '#FFF3A3'
+      const fv = fontNode?.attrs['w:ascii'] || fontNode?.attrs['w:eastAsia']
+      if (fv) run.font = fv
+      runs.push(run)
     }
     if (runs.length === 0) runs.push({ text: '' })
     blocks.push({ id: 'b' + i++, type, align, runs })
@@ -132,25 +170,59 @@ export function docxToBlocks(buf: Uint8Array): Block[] {
 }
 
 // ---------- blocks -> docx ----------
+/** docx 高亮色名 <-> CSS 色值（编辑器内统一用 CSS 表示） */
+const HL_CSS_TO_DOCX: Record<string, string> = {
+  '#FFF3A3': 'yellow',
+  '#DEF7E6': 'green',
+  '#D3E5FE': 'cyan',
+  '#FDDDEC': 'magenta',
+  '#E8DCFD': 'darkMagenta',
+}
+const HL_DOCX_TO_CSS: Record<string, string> = {
+  yellow: '#FFF3A3',
+  green: '#DEF7E6',
+  cyan: '#D3E5FE',
+  magenta: '#FDDDEC',
+  darkMagenta: '#E8DCFD',
+}
+
 function runXML(r: Run): string {
   const rPr: string[] = []
   if (r.b) rPr.push('<w:b/><w:bCs/>')
   if (r.i) rPr.push('<w:i/><w:iCs/>')
   if (r.u) rPr.push('<w:u w:val="single"/>')
+  if (r.s) rPr.push('<w:strike/>')
+  if (r.font) rPr.push(`<w:rFonts w:ascii="${esc(r.font)}" w:eastAsia="${esc(r.font)}"/>`)
+  if (r.color) rPr.push(`<w:color w:val="${esc(r.color.replace('#', ''))}"/>`)
+  if (r.hl) rPr.push(`<w:highlight w:val="${HL_CSS_TO_DOCX[r.hl.toUpperCase()] || 'yellow'}"/>`)
+  if (r.code) rPr.push('<w:rFonts w:ascii="Consolas" w:eastAsia="Consolas"/><w:shd w:val="clear" w:fill="F2F3F5"/>')
+  if (r.link) rPr.push('<w:color w:val="185FA5"/><w:u w:val="single"/>')
   const pr = rPr.length ? `<w:rPr>${rPr.join('')}</w:rPr>` : ''
   return `<w:r>${pr}<w:t xml:space="preserve">${esc(r.text)}</w:t></w:r>`
 }
 
 function blockXML(b: Block): string {
   const pPr: string[] = []
-  const styleMap: Record<BlockType, string> = {
+  const styleMap: Partial<Record<BlockType, string>> = {
     p: 'Normal',
     h1: 'Heading1',
     h2: 'Heading2',
     h3: 'Heading3',
+    h4: 'Heading4',
+    h5: 'Heading5',
+    h6: 'Heading6',
+    h7: 'Heading7',
+    h8: 'Heading8',
+    h9: 'Heading9',
+    ol: 'ListParagraph',
     li: 'ListParagraph',
+    task: 'ListParagraph',
+    code: 'Normal',
+    quote: 'Quote',
+    callout: 'Normal',
+    sync: 'Normal',
   }
-  pPr.push(`<w:pStyle w:val="${styleMap[b.type]}"/>`)
+  pPr.push(`<w:pStyle w:val="${styleMap[b.type] || 'Normal'}"/>`)
   if (b.align === 'center') pPr.push('<w:jc w:val="center"/>')
   else if (b.align === 'right') pPr.push('<w:jc w:val="right"/>')
   else if (b.align === 'left') pPr.push('<w:jc w:val="left"/>')

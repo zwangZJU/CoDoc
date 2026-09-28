@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, type DocMeta } from '../store/api'
-import { getLocalUser, colorOf } from '../store/user'
+import { colorOf, type LocalUser } from '../store/user'
 import CreateModal from '../components/CreateModal'
 import ExportModal, { type DocFormat, type SheetFormat } from '../components/ExportModal'
 import ShareDrawer from '../components/ShareDrawer'
@@ -67,6 +67,9 @@ interface Props {
   onExitTeam?: () => void
   onManageTeam?: () => void
   onOpenTeam?: (t: { id: string; name: string }) => void
+  /** 当前登录账号（由 App 注入：身份来自后端会话，不再本地生成） */
+  me: LocalUser
+  onLogout: () => void
 }
 
 export default function Workspace({
@@ -76,8 +79,9 @@ export default function Workspace({
   onExitTeam,
   onManageTeam,
   onOpenTeam,
+  me,
+  onLogout,
 }: Props) {
-  const me = useMemo(() => getLocalUser(), [])
   const [docs, setDocs] = useState<DocMeta[]>([])
   const [teams, setTeams] = useState<{ id: string; name: string; fileCount: number }[]>([])
   const [live, setLive] = useState<Record<string, { conns: number; users: string[] }>>({})
@@ -285,7 +289,10 @@ export default function Workspace({
     if (teamId) list = list.filter((d) => d.teamId === teamId)
     else list = list.filter((d) => !d.teamId)
     if (nav === 'fav') list = list.filter((d) => favs.includes(d.id))
-    else if (nav === 'shared') list = list.filter((d) => (d.members || 0) > 1)
+    // 「共享给我」= 我有权限、但不是我创建的——以服务端返回的权限为准，
+    // 不再用"成员数>1"猜，那会把只有自己一人的文档也算进去
+    else if (nav === 'shared')
+      list = list.filter((d) => !!d.myLevel && d.myLevel !== 'none' && d.myLevel !== 'owner')
     else if (nav === 'trash') list = docs.filter((d) => trash.includes(d.id))
     else list = list.filter((d) => !trash.includes(d.id))
     if (filter !== 'all') list = list.filter((d) => d.kind === filter)
@@ -304,6 +311,14 @@ export default function Workspace({
   const liveCount = (id: string) => live[id]?.users.length || live[id]?.conns || 0
   const liveUsers = (id: string) => live[id]?.users || []
   const liveDocs = docs.filter((d) => liveCount(d.id) > 0).length
+
+  /**
+   * 没有权限就不显示该项，而不是点了才报错（飞书的防错做法）。
+   * 服务端也会拦，这里只是让 UI 不撒谎。
+   */
+  const canManage = (d: DocMeta) => d.myLevel === 'owner' || d.myLevel === 'manage'
+  const canEditDoc = (d: DocMeta) =>
+    d.myLevel === 'owner' || d.myLevel === 'manage' || d.myLevel === 'edit'
 
   const emptyText = (() => {
     if (nav === 'trash') return '回收站是空的。删除的文件会先放到这里，可随时还原。'
@@ -452,9 +467,15 @@ export default function Workspace({
           onChange={(e) => setQ(e.target.value)}
         />
         <div className="topbar-right">
-          <span className="avatar" style={{ background: colorOf(me.colorIndex).c }} title={me.name}>
-            {me.name.slice(0, 1)}
+          <span className="ws-me" title={me.email ? `${me.name}（${me.email}）` : me.name}>
+            <span className="avatar" style={{ background: colorOf(me.colorIndex).c }}>
+              {me.name.slice(0, 1)}
+            </span>
+            <span className="ws-me-name">{me.name}</span>
           </span>
+          <button className="btn-ghost" onClick={onLogout} title="退出登录">
+            退出
+          </button>
         </div>
       </header>
 
@@ -694,15 +715,17 @@ export default function Workspace({
               >
                 导出
               </button>
-              <button
-                onClick={() => {
-                  setRenameTarget(menu.doc)
-                  setRenameVal(menu.doc.name)
-                  setMenu(null)
-                }}
-              >
-                重命名
-              </button>
+              {canEditDoc(menu.doc) && (
+                <button
+                  onClick={() => {
+                    setRenameTarget(menu.doc)
+                    setRenameVal(menu.doc.name)
+                    setMenu(null)
+                  }}
+                >
+                  重命名
+                </button>
+              )}
             </>
           ) : (
             <>
@@ -739,24 +762,28 @@ export default function Workspace({
               >
                 {favs.includes(menu.doc.id) ? '取消收藏' : '收藏'}
               </button>
-              <button
-                onClick={() => {
-                  setRenameTarget(menu.doc)
-                  setRenameVal(menu.doc.name)
-                  setMenu(null)
-                }}
-              >
-                重命名
-              </button>
-              <button
-                className="danger"
-                onClick={() => {
-                  moveToTrash(menu.doc)
-                  setMenu(null)
-                }}
-              >
-                移入回收站
-              </button>
+              {canEditDoc(menu.doc) && (
+                <button
+                  onClick={() => {
+                    setRenameTarget(menu.doc)
+                    setRenameVal(menu.doc.name)
+                    setMenu(null)
+                  }}
+                >
+                  重命名
+                </button>
+              )}
+              {canManage(menu.doc) && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    moveToTrash(menu.doc)
+                    setMenu(null)
+                  }}
+                >
+                  移入回收站
+                </button>
+              )}
             </>
           )}
         </div>

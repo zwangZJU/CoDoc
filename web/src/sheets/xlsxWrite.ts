@@ -226,6 +226,27 @@ function createStyleBook(): StyleBook {
   const numFmtIndex = new Map<string, number>()
   let nextNumFmtId = 164
 
+  /**
+   * cellXfs 的第 0 项**必须**是「空默认样式」。
+   * Excel / WPS 把 cellXfs[0] 当作所有**没写 s 属性的单元格**的默认格式
+   * （表格内容区之外的整片空白格都属于这类）。谁占了 0 号位，外围空白就长什么样——
+   * 之前第一个被登记的样式（这里是蓝色表头 #4472C4）落在 0 号，
+   * 导出后表格之外就整片变成蓝色 + 白色加粗字。
+   * 这里先占住 0 号：默认字体 / 无底色 / 无边框 / 左对齐 + 垂直居中（与网页默认一致），
+   * 所有真实样式从 1 号开始。
+   */
+  const DEFAULT_XF: XfDef = {
+    numFmtId: 0,
+    fontId: 0,
+    fillId: 0,
+    borderId: 0,
+    h: 'left',
+    v: 'center',
+    wrap: false,
+  }
+  xfs.push(xfXml(DEFAULT_XF))
+  xfIndex.set(JSON.stringify(DEFAULT_XF), 0)
+
   // fonts[0] 固定为默认字体（Normal 样式），顺手登记进索引，避免重复插入
   const defaultFont: FontDef = {
     name: DEFAULT_FONT,
@@ -344,8 +365,29 @@ function safeSheetName(name: string, i: number): string {
 
 function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
   const rowsIn = sheet.rows || []
-  // 1x1 的「合并」没有意义，写出去反而会让 Excel 报错
-  const merges = (sheet.merges || []).filter((m) => m && m.rs > 0 && m.cs > 0 && (m.rs > 1 || m.cs > 1))
+  const rowCount = rowsIn.length
+  const colCount = rowsIn.reduce((n, r) => Math.max(n, r.length), 0)
+  // 工作副本：合并区的文字回收只作用在这份副本上，不改调用方的数据
+  const rows: CellData[][] = rowsIn.map((r) => r.map((c) => ({ ...c })))
+
+  // 1x1 的「合并」没有意义，写出去反而会让 Excel 报错；
+  // 越界的合并区裁到边界内；互相重叠的只保留先出现的（重叠会让 Excel 判定文件损坏）
+  const seen = new Set<string>()
+  const merges: MergeInfo[] = []
+  for (const m of sheet.merges || []) {
+    if (!m || !Number.isFinite(m.r) || !Number.isFinite(m.c)) continue
+    if (m.r < 0 || m.c < 0 || m.r >= rowCount || m.c >= colCount) continue
+    const rs = Math.max(1, Math.min(Math.floor(m.rs || 1), rowCount - m.r))
+    const cs = Math.max(1, Math.min(Math.floor(m.cs || 1), colCount - m.c))
+    if (rs === 1 && cs === 1) continue
+    let overlap = false
+    for (let r = m.r; r < m.r + rs && !overlap; r++)
+      for (let c = m.c; c < m.c + cs && !overlap; c++) if (seen.has(r + ',' + c)) overlap = true
+    if (overlap) continue
+    for (let r = m.r; r < m.r + rs; r++)
+      for (let c = m.c; c < m.c + cs; c++) seen.add(r + ',' + c)
+    merges.push({ r: m.r, c: m.c, rs, cs })
+  }
   const colw = sheet.colw || {}
   const rowh = sheet.rowh || {}
 
@@ -360,7 +402,26 @@ function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
     }
   }
 
-  const cellAt = (r: number, c: number): CellData => rowsIn[r]?.[c] ?? { v: '' }
+  // 锚点是空的、但覆盖区里还有字：把字搬回锚点。
+  // 覆盖区在导出时不写值，不搬的话这段字就彻底丢了
+  for (const m of merges) {
+    const anchor = rows[m.r]?.[m.c]
+    if (!anchor || (anchor.v ?? '').trim() !== '') continue
+    let moved = false
+    for (let r = m.r; r < m.r + m.rs && !moved; r++) {
+      for (let c = m.c; c < m.c + m.cs && !moved; c++) {
+        if (r === m.r && c === m.c) continue
+        const cell = rows[r]?.[c]
+        if (!cell || (cell.v ?? '').trim() === '') continue
+        anchor.v = cell.v
+        if (!anchor.s && cell.s) anchor.s = cell.s
+        cell.v = ''
+        moved = true
+      }
+    }
+  }
+
+  const cellAt = (r: number, c: number): CellData => rows[r]?.[c] ?? { v: '' }
 
   /** 该格是否写了内容 */
   const hasContent = (r: number, c: number): boolean => {
@@ -392,8 +453,8 @@ function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
 
   let maxR = -1
   let maxC = -1
-  for (let r = 0; r < rowsIn.length; r++) {
-    for (let c = 0; c < (rowsIn[r]?.length ?? 0); c++) {
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < (rows[r]?.length ?? 0); c++) {
       if (!present(r, c)) continue
       if (r > maxR) maxR = r
       if (c > maxC) maxC = c
@@ -403,9 +464,23 @@ function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
     maxR = Math.max(maxR, m.r + m.rs - 1)
     maxC = Math.max(maxC, m.c + m.cs - 1)
   }
-  for (const k of Object.keys(colw)) maxC = Math.max(maxC, Number(k))
   if (maxR < 0) maxR = 0
   if (maxC < 0) maxC = 0
+  /**
+   * 列宽 / 行高**不再参与**边界扩展：拖过宽的列、拖过高的行如果落在内容区之外，
+   * 会被原样写成一列列 / 一行行空单元格，导出后就是一整片多余的空格。
+   * 只保留内容区以内的宽高设置。
+   */
+  const colwOut: Record<number, number> = {}
+  for (const k of Object.keys(colw)) {
+    const i = Number(k)
+    if (Number.isFinite(i) && i >= 0 && i <= maxC) colwOut[i] = colw[i]
+  }
+  const rowhOut: Record<number, number> = {}
+  for (const k of Object.keys(rowh)) {
+    const i = Number(k)
+    if (Number.isFinite(i) && i >= 0 && i <= maxR) rowhOut[i] = rowh[i]
+  }
 
   // 公式求值用的取数器（取原始文本，公式单元格交给 Excel 自己重算）
   const getter = (ref: string): string => {
@@ -421,7 +496,7 @@ function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
   if (maxC >= 0) {
     const parts: string[] = []
     for (let c = 0; c <= maxC; c++) {
-      const w = colw[c] ? pxToColWidth(colw[c]) : pxToColWidth(DEFAULT_COL_PX)
+      const w = colwOut[c] ? pxToColWidth(colwOut[c]) : pxToColWidth(DEFAULT_COL_PX)
       parts.push(`<col min="${c + 1}" max="${c + 1}" width="${w}" customWidth="1"/>`)
     }
     colsXml = `<cols>${parts.join('')}</cols>`
@@ -440,8 +515,10 @@ function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
       const cell = cellAt(sr, sc)
       // 被合并覆盖的格子不写值，但沿用锚点样式，保证边框连续
       let style = cell.s
-      // 没写内容的空格子：保留边框 / 字体等结构样式，但剥离底色，
-      // 避免"空白格被整片上色"，同时不让边框在导出后丢失
+      // 不变式：**没内容的格子一律不带底色**。
+      // 空格子只保留边框 / 字体这类结构样式，底色必须剥离——
+      // 否则导入时补出来的那片外围空单元格会被整片刷上底色（表现为"外围全是蓝色格子"）。
+      // 合并覆盖区例外：它显示的是锚点的内容，跟随锚点底色才是正确的合并效果。
       if (!hasContent(sr, sc) && style) {
         const { bg: _bg, ...rest } = style
         style = Object.keys(rest).length ? rest : undefined
@@ -468,8 +545,8 @@ function buildSheetXml(sheet: WriteSheet, sb: StyleBook): string {
       const tAttr = inner.startsWith('<is>') ? ' t="inlineStr"' : ''
       cells.push(inner === '' ? `<c r="${ref}" s="${sIdx}"${tAttr}/>` : `<c r="${ref}" s="${sIdx}"${tAttr}>${inner}</c>`)
     }
-    if (cells.length === 0 && !rowh[r]) continue
-    const ht = rowh[r] ? ` ht="${pxToPt(rowh[r])}" customHeight="1"` : ''
+    if (cells.length === 0 && !rowhOut[r]) continue
+    const ht = rowhOut[r] ? ` ht="${pxToPt(rowhOut[r])}" customHeight="1"` : ''
     rowXml.push(`<row r="${r + 1}"${ht}>${cells.join('')}</row>`)
   }
 

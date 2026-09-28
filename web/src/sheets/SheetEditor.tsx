@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { WebsocketProvider } from 'y-websocket'
 import type { RemotePeer } from '../store/useAwareness'
 import type { LocalUser } from '../store/user'
@@ -37,11 +37,223 @@ interface Props {
   docId?: string
 }
 
-/** 一行文字占的高度（13px 字号 × 1.4 行高），用于编辑态的垂直居中 */
-const CELL_TEXT_H = 18
-/** 网格尺寸令牌（与 tokens.css 保持一致，冻结定位需要具体像素） */
+/**
+ * 网格尺寸令牌（与 tokens.css 保持一致）。
+ * 全局 border-box 下表头总尺寸 = 令牌值；冻结吸附偏移仍以
+ * 角标 th 实测为准（见 fzOffset），令牌值仅作初值兜底。
+ */
 const HEADER_H = 24
 const ROWNUM_W = 44
+
+/**
+ * 预览态与编辑态**共用**的文本排版。
+ * 字体 / 字号 / 字重 / 颜色 / 水平对齐 / 行高 / 换行策略全部取自同一处，
+ * 保证双击进入编辑时文字不会跳位（尤其是水平、垂直都居中的单元格）。
+ */
+function textStyleOf(st: CellStyle | undefined, multi: boolean): React.CSSProperties {
+  const s: React.CSSProperties = {
+    lineHeight: 'var(--grid-line-height)',
+    textAlign: st?.align || 'left',
+  }
+  if (st?.font) s.fontFamily = st.font
+  if (st?.size) s.fontSize = st.size + 'px'
+  if (st?.bold) s.fontWeight = 700
+  if (st?.italic) s.fontStyle = 'italic'
+  if (st?.underline || st?.strike) {
+    s.textDecoration = [st.underline ? 'underline' : '', st.strike ? 'line-through' : '']
+      .filter(Boolean)
+      .join(' ')
+  }
+  if (st?.color) s.color = st.color
+  if (multi) {
+    s.whiteSpace = 'pre-wrap'
+    s.wordBreak = 'break-word'
+  } else {
+    // 单行：与预览态一致不折行，超长的部分横向滚动（wrap="off"）
+    s.whiteSpace = 'pre'
+  }
+  return s
+}
+
+/** 编辑框横向溢出的上限：再长的文字也不无限拉宽，超出部分裁掉 */
+const EDIT_MAX_W = 640
+
+/**
+ * 文本测量：用一个脱离文档流的隐藏 span（与单元格同字体 / 字号），
+ * 量出「最长一行」文字本身的像素宽（不含内边距）。
+ * 只用来决定**编辑框**该画多宽，绝不参与列宽计算。
+ */
+let _textProbe: HTMLSpanElement | null = null
+function measureTextWidth(
+  text: string,
+  fontFamily: string,
+  fontSize: string,
+  fontWeight: string,
+  fontStyle: string
+): number {
+  if (typeof document === 'undefined') return 0
+  if (!_textProbe) {
+    _textProbe = document.createElement('span')
+    _textProbe.style.cssText =
+      'position:absolute;left:-99999px;top:0;visibility:hidden;white-space:pre;' +
+      'padding:0;border:0;display:inline-block'
+    document.body.appendChild(_textProbe)
+  }
+  const p = _textProbe
+  p.style.fontFamily = fontFamily
+  p.style.fontSize = fontSize
+  p.style.fontWeight = fontWeight
+  p.style.fontStyle = fontStyle
+  let max = 0
+  for (const line of (text || ' ').split('\n')) {
+    p.textContent = line.length ? line : ' '
+    const w = p.getBoundingClientRect().width
+    if (w > max) max = w
+  }
+  return max
+}
+
+interface CellEditorProps {
+  value: string
+  st?: CellStyle
+  multi: boolean
+  /** 单元格实际底色：编辑框沿用，避免进入编辑时底色跳变 */
+  bg: string
+  onChange: (v: string) => void
+  onBlur: () => void
+}
+
+/**
+ * 单元格编辑框。
+ * 垂直对齐交给外层 flex（top / middle / bottom → flex-start / center / flex-end），
+ * 不再用「算 paddingTop」的老办法——那条路在字号变化、多行、底部对齐时都会算错。
+ */
+function CellEditor({ value, st, multi, bg, onChange, onBlur }: CellEditorProps) {
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * 尺寸同步：
+   *  - 默认贴着单元格的内容区（top/bottom 都归零），高度由 CSS 撑满，
+   *    垂直居中交给 flex，和预览态的 vertical-align: middle 落在同一位置；
+   *  - 内容比单元格高（多行 / 自动换行）时改成「顶部不动、向下长」，
+   *    溢出部分盖在下方单元格之上，不撑动行高；
+   *  - 内容比单元格宽（单行长文本）时改成「朝对齐方向溢出」，
+   *    盖在右侧（右对齐则左侧、居中则两侧）邻居之上，不撑动列宽。
+   */
+  useLayoutEffect(() => {
+    const ta = taRef.current
+    const wrap = wrapRef.current
+    if (!ta || !wrap) return
+    const td = wrap.parentElement as HTMLElement | null
+
+    if (td) {
+      const cs = getComputedStyle(td)
+      const padL = parseFloat(cs.paddingLeft) || 0
+      const padR = parseFloat(cs.paddingRight) || 0
+
+      // ⓪ 左右内边距必须**等于单元格 td 的实际 padding**，否则一进编辑文字就横向跳位。
+      //    坑：.cell 上那句 padding: 0 var(--grid-cell-px) 被优先级更高的
+      //    `.grid td { padding: 0 }` 吃掉了（0,1,1 > 0,1,0），预览态实际是 0；
+      //    而编辑框容器以前写死 --grid-cell-px（8px），于是双击进编辑文字右移 8px。
+      //    改成运行时跟随 td 的计算值：两边同源，以后再改内边距也不会漂。
+      wrap.style.paddingLeft = padL + 'px'
+      wrap.style.paddingRight = padR + 'px'
+
+      // ① 再定宽度：多行靠折行消化长文本，折行结果取决于宽度，
+      //    宽度没定就量高度会拿到上一帧的错误值（单行 ↔ 多行切换时会闪一下）。
+      if (multi) {
+        // 自动换行 / 多行：宽度锁死在单元格上
+        wrap.style.left = ''
+        wrap.style.right = ''
+        wrap.style.width = ''
+        ta.style.width = '100%'
+      } else {
+        const innerW = Math.max(0, td.clientWidth - padL - padR)
+        const textW = measureTextWidth(
+          value,
+          cs.fontFamily || 'var(--font-sans)',
+          cs.fontSize || '13px',
+          cs.fontWeight || '400',
+          cs.fontStyle || 'normal'
+        )
+        // 单行：编辑框自己变宽，列宽不动
+        const w = Math.min(EDIT_MAX_W, Math.max(innerW, Math.ceil(textW) + 2))
+        ta.style.width = w + 'px'
+        // wrap 是 border-box，宽度要把左右内边距一起算上
+        wrap.style.width = w + padL + padR + 'px'
+        // 按对齐方向决定往哪边长，保证文字起始位置与预览态不跳位
+        const align = st?.align || 'left'
+        if (align === 'right') {
+          wrap.style.left = 'auto'
+          wrap.style.right = '0'
+        } else if (align === 'center') {
+          wrap.style.left = `${-(w - innerW) / 2}px`
+          wrap.style.right = 'auto'
+        } else {
+          wrap.style.left = '0'
+          wrap.style.right = 'auto'
+        }
+      }
+    }
+
+    // ② 再量高度（rows=1，textarea 的 auto 高度就是一行，scrollHeight 量得准）
+    ta.style.height = 'auto'
+    const h = ta.scrollHeight
+    ta.style.height = h + 'px'
+    const boxH = td ? td.clientHeight : 0
+    if (boxH && h > boxH) {
+      // 内容比单元格高：顶部不动、向下长，盖在下方单元格之上，不撑动行高
+      wrap.style.bottom = 'auto'
+      wrap.style.height = h + 'px'
+    } else {
+      // 高度交回 CSS（铺满单元格），垂直居中由 flex 负责
+      wrap.style.bottom = '0'
+      wrap.style.height = ''
+    }
+  }, [value, multi, st?.size, st?.wrap, st?.align, st?.font, st?.bold, st?.italic])
+
+  // 进入编辑：光标落到末尾（与 Excel 双击一致）
+  useEffect(() => {
+    const ta = taRef.current
+    if (!ta) return
+    ta.focus()
+    const end = ta.value.length
+    try {
+      ta.setSelectionRange(end, end)
+    } catch {
+      /* 某些浏览器在受控更新前设置会抛错，忽略即可 */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const justify =
+    st?.valign === 'top' ? 'flex-start' : st?.valign === 'bottom' ? 'flex-end' : 'center'
+
+  return (
+    <div className="cell-edit-wrap" ref={wrapRef} style={{ justifyContent: justify, background: bg }}>
+      <textarea
+        ref={taRef}
+        className="cell-edit"
+        /**
+         * 关键：必须显式 rows={1}。
+         * textarea 的 rows 默认值是 2，height:auto 时它的盒子天生就是「两行高」，
+         * 于是下面量出来的 scrollHeight 恒等于两行而不是一行 →
+         * 单行单元格一进编辑就被撑成两行高的框、文字顶到上边沿（位置跳变）。
+         * 锁成 1 行后，scrollHeight = max(一行高, 内容高)，单行/多行都量得准。
+         */
+        rows={1}
+        // 单行模式关掉软换行：与预览态的「不折行 + 省略号」保持同一套视觉
+        wrap={multi ? 'soft' : 'off'}
+        style={textStyleOf(st, multi)}
+        value={value}
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+      />
+    </div>
+  )
+}
 
 export default function SheetEditor({
   sheet,
@@ -110,6 +322,30 @@ export default function SheetEditor({
   const toastTimer = useRef<number | null>(null)
   /** 一次落笔动作：格式刷 / 绘制边框（在 mouseup 时结算） */
   const paintRef = useRef<'format' | 'border' | null>(null)
+
+  /**
+   * 冻结行列的吸附偏移 = 表头实际渲染尺寸。
+   * 初值取尺寸令牌（全局 border-box 下表头总尺寸即令牌值），
+   * 挂载后用角标 th 实测校准（ResizeObserver 持续响应，
+   * 避免挂载瞬间布局未稳定测到脏值，也兼容以后令牌/盒模型调整）。
+   * 通过 CSS 变量 --fz-top / --fz-left 下发给冻结单元格和 th.frozen-head。
+   */
+  const [fzOffset, setFzOffset] = useState({ top: HEADER_H, left: ROWNUM_W })
+  useLayoutEffect(() => {
+    const corner = gridRef.current?.querySelector<HTMLElement>('.corner')
+    if (!corner) return
+    const apply = () => {
+      const h = corner.offsetHeight
+      const w = corner.offsetWidth
+      if (h > 0 && w > 0) {
+        setFzOffset((prev) => (prev.top === h && prev.left === w ? prev : { top: h, left: w }))
+      }
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(corner)
+    return () => ro.disconnect()
+  }, [])
 
   const notify = (msg: string) => {
     setToast(msg)
@@ -239,6 +475,30 @@ export default function SheetEditor({
     setSelStart({ r, c })
     setDraft(initial !== undefined ? initial : rows[r]?.[c]?.v ?? '')
     setEditing({ r, c })
+    // 进入编辑前把单元格滚到完整可见：贴着表头/行号列的半遮单元格，
+    // 编辑框上沿/左沿会被 sticky 表头挡住（Excel 同款行为）
+    scrollCellIntoView(r, c)
+  }
+
+  /** 把 (r,c) 单元格滚动到 sticky 表头与行号列以内完整可见 */
+  const scrollCellIntoView = (r: number, c: number) => {
+    const sc = gridRef.current
+    if (!sc) return
+    const td = sc.querySelector<HTMLTableCellElement>(`td[data-r="${r}"][data-c="${c}"]`)
+    if (!td) return
+    const rect = td.getBoundingClientRect()
+    const box = sc.getBoundingClientRect()
+    const pad = 1
+    if (rect.top < box.top + fzOffset.top) {
+      sc.scrollTop += rect.top - box.top - fzOffset.top - pad
+    } else if (rect.bottom > box.bottom) {
+      sc.scrollTop += rect.bottom - box.bottom + pad
+    }
+    if (rect.left < box.left + fzOffset.left) {
+      sc.scrollLeft += rect.left - box.left - fzOffset.left - pad
+    } else if (rect.right > box.right) {
+      sc.scrollLeft += rect.right - box.right + pad
+    }
   }
 
   // ---- 格式刷落笔 / 绘制边框落笔 ----
@@ -261,17 +521,25 @@ export default function SheetEditor({
   const onGridKey = (e: React.KeyboardEvent) => {
     if (readOnly) return
     if (editing) {
-      if (e.key === 'Enter' && e.altKey) {
+      // 单元格内换行：Alt+Enter / Shift+Enter（普通 Enter 仍是提交并下移）
+      if (e.key === 'Enter' && (e.altKey || e.shiftKey)) {
         e.preventDefault()
         setDraft((d) => d + '\n')
         return
       }
       if (e.key === 'Enter') {
         e.preventDefault()
-        commit({ r: Math.min(rowCount - 1, editing.r + 1), c: editing.c })
+        // 在最后一行按回车：自动补一行，表格可以一直往下写
+        if (editing.r === rowCount - 1) addRow(rowCount)
+        commit({ r: Math.min(rowCount, editing.r + 1), c: editing.c })
       } else if (e.key === 'Tab') {
         e.preventDefault()
-        commit({ r: editing.r, c: Math.min(colCount - 1, editing.c + 1) })
+        // 在最后一列按 Tab：自动补一列
+        if (editing.c === colCount - 1) addCol(colCount)
+        commit({
+          r: editing.r,
+          c: Math.min(colCount, e.shiftKey ? Math.max(0, editing.c - 1) : editing.c + 1),
+        })
       } else if (e.key === 'Escape') {
         setEditing(null)
       }
@@ -362,11 +630,17 @@ export default function SheetEditor({
 
   const onPaste = (e: React.ClipboardEvent) => {
     if (readOnly) return
+    // 编辑态：交给输入框自己处理（原生粘贴，回车留在同一个格子里，不会被拆到多格）
+    if (editing) return
     const text = e.clipboardData.getData('text/plain')
     if (!text) return
     e.preventDefault()
-    const r = sheet.pasteTsv(sel.r, sel.c, text)
-    notify(`已粘贴 ${r.rows} 行 × ${r.cols} 列`)
+    try {
+      const r = sheet.pasteTsv(sel.r, sel.c, text)
+      notify(`已粘贴 ${r.rows} 行 × ${r.cols} 列`)
+    } catch {
+      notify('粘贴失败：内容超出表格范围')
+    }
   }
 
   // ---- 工具条回调 ----
@@ -414,6 +688,9 @@ export default function SheetEditor({
     setColWidth(c, Math.min(360, Math.round(w)))
     notify(`${indexToCol(c)} 列宽已自适应`)
   }
+
+  // 注意：输入过程中**不**自动改列宽——列宽只由拖拽 / 自适应宽度 / AI 操作决定，
+  // 文字写多长都不会顶开列。编辑框自己会溢出到邻居之上（见 CellEditor）。
 
   // ---- 行列宽高拖拽 ----
   const startColResize = (c: number, e: React.MouseEvent) => {
@@ -551,6 +828,12 @@ export default function SheetEditor({
           className="grid-scroll"
           ref={gridRef}
           tabIndex={0}
+          style={
+            {
+              '--fz-top': `${fzOffset.top}px`,
+              '--fz-left': `${fzOffset.left}px`,
+            } as React.CSSProperties
+          }
           onKeyDown={onGridKey}
           onPaste={onPaste}
         >
@@ -603,45 +886,33 @@ export default function SheetEditor({
                       r >= range.r1 && r <= range.r2 && c >= range.c1 && c <= range.c2
                     const remote = others.length ? others[0] : null
                     const remoteColor = remote ? colorOf(remote.user!.colorIndex) : null
+                    const isEditing = !!editing && editing.r === r && editing.c === c
                     const st = cell.s
-                    const cellStyle: React.CSSProperties = {}
-                    if (st?.font) cellStyle.fontFamily = st.font
-                    if (st?.size) cellStyle.fontSize = st.size + 'px'
-                    if (st?.bold) cellStyle.fontWeight = 700
-                    if (st?.italic) cellStyle.fontStyle = 'italic'
-                    if (st?.underline || st?.strike)
-                      cellStyle.textDecoration = [
-                        st.underline ? 'underline' : '',
-                        st.strike ? 'line-through' : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' ')
-                    if (st?.align) cellStyle.textAlign = st.align
+                    // 编辑中的单元格：换行判定要跟着正在输入的草稿走，
+                    // 否则敲下 Alt+Enter 的那一刻排版会从「单行」跳成「多行」
+                    const shown = isEditing ? draft : cell.v
+                    const multi = !!st?.wrap || (shown ? shown.includes('\n') : false)
+                    const cellStyle: React.CSSProperties = { ...textStyleOf(st, multi) }
                     if (st?.valign) cellStyle.verticalAlign = st.valign
                     if (st?.bg) cellStyle.background = st.bg
-                    if (st?.color) cellStyle.color = st.color
-                    if (st?.wrap) {
-                      cellStyle.whiteSpace = 'normal'
-                      cellStyle.wordBreak = 'break-word'
-                      cellStyle.height = 'auto'
-                    }
-                    const multi = !!st?.wrap || (cell.v ? cell.v.includes('\n') : false)
-                    if (multi) {
-                      cellStyle.whiteSpace = 'pre-wrap'
-                      cellStyle.wordBreak = 'break-word'
-                      cellStyle.height = 'auto'
-                    }
+                    if (multi) cellStyle.height = 'auto'
                     // 冻结行列：sticky 需要不透明底色，否则滚动时透出下层
                     const fRow = r < fzRows
                     const fCol = c < fzCols
+                    // 编辑框沿用的底色：与下面 td 实际渲染出来的底色保持一致
+                    const editBg =
+                      st?.bg || (inRange && !isSel ? 'var(--brand-tint-10)' : 'var(--bg-canvas)')
                     if (fRow || fCol) {
                       cellStyle.position = 'sticky'
-                      if (fRow) cellStyle.top = HEADER_H
-                      if (fCol) cellStyle.left = ROWNUM_W
+                      // 吸附偏移用实测的表头外沿尺寸（含边框），避免顶进表头底下
+                      if (fRow) cellStyle.top = 'var(--fz-top)'
+                      if (fCol) cellStyle.left = 'var(--fz-left)'
                       cellStyle.zIndex = fRow && fCol ? 8 : fRow ? 6 : 5
-                      cellStyle.background =
-                        st?.bg || (inRange && !isSel ? 'var(--brand-tint-10)' : 'var(--bg-canvas)')
+                      cellStyle.background = editBg
                     }
+                    // 编辑中的格子必须压在邻居（含冻结行列）之上，
+                    // 否则多行内容溢出到下一行时会被后面的单元格盖住
+                    if (isEditing) cellStyle.zIndex = 30
                     const b = st?.border
                     const drawB = (
                       side: 'Top' | 'Left' | 'Bottom' | 'Right',
@@ -663,13 +934,16 @@ export default function SheetEditor({
                     return (
                       <td
                         key={c}
+                        data-r={r}
+                        data-c={c}
                         className={
                           'cell' +
                           (isSel ? ' sel' : '') +
                           (inRange && !isSel ? ' range' : '') +
                           (remote ? ' remote' : '') +
                           (remoteColor ? ' has-owner' : '') +
-                          (st?.wrap ? ' wrap' : '') +
+                          (multi ? ' wrap' : '') +
+                          (isEditing ? ' editing' : '') +
                           (hasComment ? ' has-comment' : '') +
                           (link ? ' has-link' : '') +
                           (c === fzCols - 1 ? ' freeze-col-shadow' : '')
@@ -677,7 +951,8 @@ export default function SheetEditor({
                         style={{
                           ...cellStyle,
                           width: colWidth(c),
-                          height: st?.wrap ? undefined : rowHeight(r),
+                          // 多行单元格让高度跟着内容走，否则第二行起会被行高裁掉
+                          height: multi ? undefined : rowHeight(r),
                           minWidth: colWidth(c),
                         }}
                         colSpan={m ? m.cs : undefined}
@@ -717,25 +992,37 @@ export default function SheetEditor({
                           if (dragging) setSel({ r, c })
                         }}
                       >
-                        {editing && editing.r === r && editing.c === c ? (
-                          <textarea
-                            className="cell-edit"
-                            autoFocus
-                            style={{
-                              textAlign: st?.align || 'left',
-                              paddingTop: Math.max(0, Math.round((rowHeight(r) - CELL_TEXT_H) / 2)),
-                            }}
+                        {/*
+                          编辑时保留一份「不可见的预览文本」当占位：
+                          多行 / 自动换行的单元格行高是内容撑出来的，
+                          直接把文本换成绝对定位的编辑框会让行高塌回单行，看起来就是跳变。
+                          占位文字必须与编辑框里的草稿**完全一致**（而不是算完公式的显示值），
+                          否则公式 / 数字格式单元格一进编辑，行高和折行位置都会跟着变。
+                        */}
+                        <span
+                          className={
+                            'cell-text' +
+                            (link ? ' cell-link' : '') +
+                            (isEditing ? ' edit-placeholder' : '')
+                          }
+                          // 换行策略与编辑态同源（见 textStyleOf），避免空格折叠方式不同导致横向跳位
+                          style={
+                            multi
+                              ? { whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
+                              : { whiteSpace: 'pre' }
+                          }
+                        >
+                          {isEditing ? draft : display(cell)}
+                        </span>
+                        {isEditing && (
+                          <CellEditor
                             value={draft}
-                            onChange={(e) => setDraft(e.target.value)}
+                            st={st}
+                            multi={multi}
+                            bg={editBg}
+                            onChange={setDraft}
                             onBlur={() => commit()}
                           />
-                        ) : (
-                          <span
-                            className={'cell-text' + (link ? ' cell-link' : '')}
-                            style={multi ? { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } : undefined}
-                          >
-                            {display(cell)}
-                          </span>
                         )}
                         {hasComment && (
                           <span className="cell-comment-tri" title={`${comment!.author}：${comment!.text}`} />
@@ -825,6 +1112,7 @@ export default function SheetEditor({
           range={range}
           selRef={selRef}
           docId={docId}
+          readOnly={readOnly}
           onClose={() => setSidePanel('none')}
           onNotify={notify}
         />

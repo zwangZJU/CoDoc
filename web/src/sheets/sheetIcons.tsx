@@ -43,6 +43,8 @@ export type IconName =
   | 'dropdown-list'
   | 'table'
   | 'align-distributed'
+  | 'indent-inc'
+  | 'indent-dec'
   // 通用
   | 'chevron-down'
   | 'chevron-right'
@@ -64,6 +66,12 @@ export type IconName =
   | 'expand'
   | 'grid'
   | 'prompt'
+  | 'brain'
+  | 'wrench'
+  | 'shield'
+  | 'list'
+  | 'stop2'
+  | 'refresh'
 
 /** 每个图标的 path 描述（可含多段子路径） */
 const P: Record<IconName, string> = {
@@ -103,6 +111,8 @@ const P: Record<IconName, string> = {
   'dropdown-list': 'M4 5h16v14H4z M12 5v14 M14.5 10.5l2 2 2-2',
   table: 'M4 5h16v14H4z M4 10h16 M4 15h16 M10 5v14',
   'align-distributed': 'M4 6h16 M4 11h16 M4 16h16',
+  'indent-inc': 'M4 5v14 M20 5v14 M9 12h7 M13 9l3 3-3 3',
+  'indent-dec': 'M4 5v14 M20 5v14 M15 12H8 M11 9l-3 3 3 3',
 
   'chevron-down': 'M6 9.5l6 6 6-6',
   'chevron-right': 'M9.5 6l6 6-6 6',
@@ -121,9 +131,15 @@ const P: Record<IconName, string> = {
   clock: 'M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M12 8.5V12h3',
   eraser: 'M8 18l-3-3 8-8 3 3-5 5 M13 18h7 M11 20H5l3-2',
   stop: 'M6 6h12v12H6z',
+  refresh: 'M17.65 6.35A8 8 0 1 0 20 12h-2.5a5.5 5.5 0 1 1-1.6-3.9L12 11.5h8V3.5z',
   expand: 'M9 4H4v5 M15 20h5v-5 M4 4l6 6 M20 20l-6-6',
   grid: 'M9 3v18 M15 3v18 M3 9h18 M3 15h18',
-  prompt: 'M4 5l7 7-7 7 M13 19h7',
+    prompt: 'M4 5l7 7-7 7 M13 19h7',
+    brain: 'M9.5 4A3.5 3.5 0 0 1 12 6a3.5 3.5 0 0 1 2.5-2A3.5 3.5 0 0 1 20 7.5c0 .86-.31 1.65-.8 2.25A3.5 3.5 0 0 1 21 12a3.5 3.5 0 0 1-2.9 3.45A3.5 3.5 0 0 1 12 19.5a3.5 3.5 0 0 1-6.1-1.05A3.5 3.5 0 0 1 3 12c0-.9.3-1.7.8-2.25A3.5 3.5 0 0 1 3 7.5 3.5 3.5 0 0 1 9.5 4z M12 8.5v7 M8.8 10.2v3.6 M15.2 10.2v3.6',
+    wrench: 'M14.6 4.6a5 5 0 0 0-6.3 6.4L3.6 15.7a2 2 0 0 0 2.8 2.8l4.7-4.7a5 5 0 0 0 6.4-6.3l-2.5 2.5-1.8-.3-.3-1.8z M20 4l-1.3 1.3',
+    shield: 'M12 3l7 3v6c0 4.5-2.8 7.5-7 9-4.2-1.5-7-4.5-7-9V6z M9 12l2 2 4-4',
+    list: 'M8.5 5h11 M8.5 12h11 M8.5 19h11 M4.5 5h.01 M4.5 12h.01 M4.5 19h.01',
+    stop2: 'M8 8h8v8H8z',
 }
 
 export function Ico({
